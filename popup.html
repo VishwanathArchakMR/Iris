@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Visual Perception Agent</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      min-width: 380px;
+      max-height: 600px;
+      overflow-y: auto;
+      padding: 12px;
+      margin: 0;
+      box-sizing: border-box;
+    }
+    h3 {
+      margin-top: 0;
+      margin-bottom: 8px;
+      font-size: 15px;
+    }
+    button {
+      width: 100%;
+      padding: 8px;
+      font-size: 14px;
+      cursor: pointer;
+      margin-bottom: 10px;
+    }
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+      resize: vertical;
+      font-family: monospace;
+      font-size: 12px;
+      padding: 6px;
+    }
+  </style>
+</head>
+<body>
+  <h3>Visual Perception Agent</h3>
+
+  <!-- Milestone 13: Browser Agent Task Input -->
+  <div style="background: #eef5fc; padding: 10px; border-radius: 6px; border: 1px solid #bbdefb; margin-bottom: 10px;">
+    <label for="taskInput" style="display: block; font-weight: bold; font-size: 13px; color: #0d47a1; margin-bottom: 4px;">Browser Agent Task (Milestone 13 Gateway):</label>
+    <textarea id="taskInput" rows="2" placeholder="e.g. Find the Submit button and click it." style="width: 100%; box-sizing: border-box; font-family: sans-serif; font-size: 13px; padding: 6px; border: 1px solid #90caf9; border-radius: 4px; resize: vertical;">Find the Submit button and click it.</textarea>
+    <button id="runAgentTaskBtn" style="background-color: #1565c0; color: #ffffff; font-weight: bold; border: none; border-radius: 4px; padding: 9px; cursor: pointer; width: 100%; margin-top: 6px; margin-bottom: 0;">Run Agent Task</button>
+  </div>
+
+  <button id="captureBtn">Capture Page Info (Local Pipeline Only)</button>
+
+  <!-- Milestone 13: Browser Agent Status Panel -->
+  <label for="agentStatusContainer" style="display: block; margin-top: 10px;"><strong>Browser Agent Status (Milestone 13 Gateway):</strong></label>
+  <div id="agentStatusContainer" style="border: 1px solid #1565c0; padding: 10px; border-radius: 6px; background: #f0f7ff; font-size: 12px; line-height: 1.5; color: #222;">
+    <div><strong>Task:</strong> <span id="agentTaskText">None</span></div>
+    <div><strong>Request ID:</strong> <span id="agentRequestId" style="font-family: monospace;">-</span></div>
+    <div><strong>Local screenshot:</strong> <span id="agentScreenshotStatus">Awaiting capture</span></div>
+    <div><strong>Local privacy:</strong> <span id="agentPrivacyStatus" style="color: #2e7d32; font-weight: bold;">ACTIVE</span></div>
+    <div><strong>DOM PII detected:</strong> <span id="agentDomPiiCount">-</span></div>
+    <div><strong>OCR sensitive regions:</strong> <span id="agentOcrPiiCount">-</span></div>
+    <div><strong>Sensitive regions (Total):</strong> <span id="agentSensitiveCount">-</span></div>
+    <div><strong>Redaction:</strong> <span id="agentRedactionStatus">-</span></div>
+    <div><strong>Sanitized visual context:</strong> <span id="agentSanitizedStatus">Awaiting pipeline</span></div>
+    <div style="margin-top: 4px; margin-bottom: 4px;">
+      <strong>Raw screenshot upload:</strong>
+      <span id="agentRawUploadStatus" style="color: #c62828; font-weight: bold; background: #ffebee; padding: 2px 6px; border-radius: 3px; border: 1px solid #ef9a9a;">BLOCKED (Never transmitted)</span>
+    </div>
+    <div style="margin-top: 2px; margin-bottom: 4px;">
+      <strong>Sanitized screenshot upload:</strong>
+      <span id="agentSanitizedUploadStatus" style="color: #2e7d32; font-weight: bold; background: #e8f5e9; padding: 2px 6px; border-radius: 3px; border: 1px solid #a5d6a7;">AWAITING</span>
+    </div>
+    <div><strong>Agent:</strong> <span id="agentModeStatus" style="font-weight: bold; color: #0d47a1;">DEMO MODE</span> <span style="font-size: 11px; color: #555;">(Deterministic local agent; no external AI API keys)</span></div>
+    <div><strong>Agent Loop:</strong> <span id="agentStepText" style="font-weight: bold; color: #1565c0;">Step 1 of up to 3</span></div>
+    <div><strong>Change Verification:</strong> <span id="agentVerificationText" style="font-weight: bold; color: #333;">Awaiting action...</span></div>
+    <div><strong>Agent action:</strong> <span id="agentActionText" style="font-family: monospace; font-weight: bold;">-</span></div>
+    <div><strong>Agent reasoning:</strong> <span id="agentReasoningText" style="font-style: italic; color: #444;">-</span></div>
+    <div style="margin-top: 4px; padding-top: 4px; border-top: 1px dashed #90caf9;">
+      <div><strong>Grounding method:</strong> <span id="groundingMethodText" style="font-family: monospace;">-</span></div>
+      <div><strong>Grounding score:</strong> <span id="groundingScoreText" style="font-family: monospace;">-</span></div>
+      <div><strong>Grounded element:</strong> <span id="groundedElementText" style="font-family: monospace;">-</span></div>
+      <div><strong>FILL step status:</strong> <span id="fillStepStatus" style="font-family: monospace;">-</span></div>
+      <div style="margin-top: 3px;">
+        <strong>Field values:</strong>
+        <span id="fieldValuesPrivacyNotice" style="color: #2e7d32; font-weight: bold; background: #e8f5e9; padding: 2px 6px; border-radius: 3px; border: 1px solid #a5d6a7;">Kept local (not sent)</span>
+      </div>
+    </div>
+    <div><strong>Local safety validation:</strong> <span id="agentSafetyStatus" style="font-weight: bold;">-</span></div>
+    <div><strong>Execution result:</strong> <span id="agentExecutionStatus" style="font-weight: bold;">-</span></div>
+    <div><strong>Gateway round-trip latency:</strong> <span id="agentGatewayLatency">-</span></div>
+
+    <!-- Milestone 14: Execution Trace History -->
+    <div style="margin-top: 8px; padding-top: 6px; border-top: 1px dashed #90caf9; font-size: 11px;">
+      <strong style="color: #0d47a1;">Execution Trace History:</strong>
+      <div id="agentTraceContainer" style="max-height: 120px; overflow-y: auto; font-family: monospace; font-size: 10px; margin-top: 4px; background: #ffffff; padding: 6px; border: 1px solid #bbdefb; border-radius: 4px; line-height: 1.4;">
+        (No trace recorded yet)
+      </div>
+    </div>
+
+    <!-- Local vs External Data Boundary Architecture Summary -->
+    <div style="margin-top: 8px; padding-top: 6px; border-top: 1px dashed #90caf9; font-size: 11px;">
+      <strong style="color: #0d47a1;">Data Boundary Architecture:</strong>
+      <table style="width: 100%; border-collapse: collapse; margin-top: 4px; font-size: 10px;">
+        <tr style="background: #e3f2fd;">
+          <th style="padding: 4px; text-align: left; border: 1px solid #bbdefb;">Local (Client-Side Only)</th>
+          <th style="padding: 4px; text-align: left; border: 1px solid #bbdefb;">External Gateway (POST /api/visual-context)</th>
+        </tr>
+        <tr>
+          <td style="padding: 4px; border: 1px solid #bbdefb; vertical-align: top;">
+            • Raw Tab Screenshot<br/>
+            • Raw OCR Text &amp; Canvas Pixels<br/>
+            • Form Values &amp; Password Fields<br/>
+            • Exact Sensitive Coordinates
+          </td>
+          <td style="padding: 4px; border: 1px solid #bbdefb; vertical-align: top;">
+            • Masked / Redacted Screenshot<br/>
+            • Redacted DOM Summary (type, label, bbox)<br/>
+            • Redaction Counts (no raw PII strings)<br/>
+            • Verified "privacyState: SANITIZED"
+          </td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <label for="output" style="display: block; margin-top: 10px;"><strong>Page Info (Title &amp; URL):</strong></label>
+  <textarea id="output" rows="4" readonly placeholder="Page title & URL will appear here..."></textarea>
+
+  <label for="sampleOutput" style="display: block; margin-top: 10px;"><strong>Redacted Page Text Sample:</strong></label>
+  <textarea id="sampleOutput" rows="7" readonly placeholder="Redacted text sample will appear here..."></textarea>
+
+  <label for="backendOutput" style="display: block; margin-top: 10px;"><strong>Backend Response:</strong></label>
+  <textarea id="backendOutput" rows="4" readonly placeholder="Backend response will appear here..."></textarea>
+
+  <label for="decisionOutput" style="display: block; margin-top: 10px;"><strong>Agent Decision:</strong></label>
+  <input type="text" id="decisionOutput" readonly placeholder="Agent decision will appear here..." style="width: 100%; box-sizing: border-box; font-family: monospace; font-size: 13px; font-weight: bold; padding: 6px;" />
+
+  <label for="executionOutput" style="display: block; margin-top: 10px;"><strong>Action Execution:</strong></label>
+  <input type="text" id="executionOutput" readonly placeholder="Execution result will appear here..." style="width: 100%; box-sizing: border-box; font-family: monospace; font-size: 13px; font-weight: bold; padding: 6px;" />
+
+  <label for="visualStatus" style="display: block; margin-top: 10px;"><strong>Local Visual Context:</strong></label>
+  <div id="visualContextContainer" style="border: 1px solid #ccc; padding: 8px; border-radius: 4px; background: #fafafa;">
+    <div id="visualStatus" style="font-size: 12px; color: #555; margin-bottom: 4px;">Awaiting capture...</div>
+    <img id="screenshotPreview" src="" alt="Local Screenshot Preview" style="display: none; width: 100%; max-height: 160px; object-fit: contain; border: 1px solid #ddd; border-radius: 4px; margin-top: 4px; margin-bottom: 8px; background: #fff;" />
+
+    <label for="elementsOutput" style="display: block; font-size: 12px; font-weight: bold; margin-bottom: 4px; color: #333;">Detected Visual Elements (DOM):</label>
+    <textarea id="elementsOutput" rows="7" readonly placeholder="Detected visual elements will appear here..." style="width: 100%; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px;"></textarea>
+  </div>
+
+  <label for="visionClassificationContainer" style="display: block; margin-top: 10px;"><strong>Local Vision Classification:</strong></label>
+  <div id="visionClassificationContainer" style="border: 1px solid #ccc; padding: 8px; border-radius: 4px; background: #fafafa;">
+    <div id="visionStatus" style="font-size: 12px; color: #555; margin-bottom: 4px;">Awaiting capture...</div>
+    <div id="visionDetails" style="font-size: 12px; font-family: monospace; color: #333; line-height: 1.5; display: none;">
+      <div><strong>Status:</strong> <span id="visionStatusText">Completed</span></div>
+      <div><strong>Provider:</strong> <span id="visionProvider">wasm</span></div>
+      <div><strong>Latency:</strong> <span id="visionLatency">-</span></div>
+      <div><strong>Class Index:</strong> <span id="visionClassIndex">-</span></div>
+      <div><strong>Confidence:</strong> <span id="visionConfidence">-</span></div>
+    </div>
+  </div>
+
+  <label for="visualPrivacyContainer" style="display: block; margin-top: 10px;"><strong>Local Visual Privacy (Screenshot Redaction):</strong></label>
+  <div id="visualPrivacyContainer" style="border: 1px solid #ccc; padding: 8px; border-radius: 4px; background: #fafafa;">
+    <div id="privacyStatus" style="font-size: 12px; color: #555; margin-bottom: 4px;">Awaiting capture...</div>
+    <div id="privacyDetails" style="font-size: 12px; font-family: monospace; color: #333; line-height: 1.5; display: none;">
+      <div><strong>Original screenshot:</strong> <span id="privacyOriginalStatus">CAPTURED LOCALLY</span></div>
+      <div><strong>OCR Engine:</strong> <span id="privacyOcrStatus">ON DEVICE</span></div>
+      <div><strong>DOM sensitive regions:</strong> <span id="privacyRegionCount">0</span></div>
+      <div><strong>OCR detected text regions:</strong> <span id="privacyOcrTextCount">0</span></div>
+      <div><strong>OCR sensitive regions:</strong> <span id="privacyOcrSensitiveCount">0</span></div>
+      <div><strong>Total redacted regions:</strong> <span id="privacyTotalRedactedCount">0</span></div>
+      <div><strong>Redaction:</strong> <span id="privacyRedactionStatus" style="color: #2e7d32; font-weight: bold;">ACTIVE</span></div>
+      
+      <label for="sanitizedScreenshotPreview" style="display: block; font-size: 11px; font-weight: bold; margin-top: 6px; color: #444;">Sanitized Screenshot (Client-side Masked):</label>
+      <img id="sanitizedScreenshotPreview" src="" alt="Sanitized Screenshot Preview" style="display: none; width: 100%; max-height: 160px; object-fit: contain; border: 1px solid #ddd; border-radius: 4px; margin-top: 4px; margin-bottom: 6px; background: #fff;" />
+      
+      <div style="font-size: 10px; color: #666; font-style: italic; margin-top: 4px; line-height: 1.3;">
+        Sensitive regions detected via local DOM attributes and on-device OCR text matching — not guaranteed to catch all sensitive content.
+      </div>
+      <div id="privacyTransmissionNotice" style="font-size: 11px; color: #2e7d32; font-weight: bold; margin-top: 4px; line-height: 1.3;">
+        Raw tab screenshot: NEVER transmitted (M13 gateway strictly requires sanitized/masked screenshot).
+      </div>
+    </div>
+  </div>
+
+  <label for="fusionContainer" style="display: block; margin-top: 10px;"><strong>Local Perception Fusion &amp; Timing:</strong></label>
+  <div id="fusionContainer" style="border: 1px solid #ccc; padding: 8px; border-radius: 4px; background: #fafafa;">
+    <div id="fusionStatus" style="font-size: 12px; color: #555; margin-bottom: 4px;">Awaiting pipeline...</div>
+    <div id="fusionDetails" style="font-size: 12px; font-family: monospace; color: #333; line-height: 1.5; display: none;">
+      <div><strong>Fused Elements:</strong> <span id="fusionElementCount">-</span></div>
+      <div><strong>Vision Class:</strong> <span id="fusionVisionClass">-</span></div>
+      <div><strong>Sensitive Regions (Total):</strong> <span id="fusionSensitiveCount">-</span></div>
+      <div style="margin-top: 6px; padding-top: 4px; border-top: 1px solid #ddd;">
+        <div><strong>Pipeline Latency:</strong></div>
+        <div style="font-size: 11px; color: #555; margin-left: 6px;">
+          <div>DOM Extraction: <span id="timingDom">-</span></div>
+          <div>Screenshot Capture: <span id="timingScreenshot">-</span></div>
+          <div>Vision Inference (SqueezeNet): <span id="timingVision">-</span></div>
+          <div>Sensitive Detection (DOM): <span id="timingSensitive">-</span></div>
+          <div>OCR Initialization: <span id="timingOcrInit">-</span></div>
+          <div>OCR Inference: <span id="timingOcrInference">-</span></div>
+          <div>OCR Sensitive Detection: <span id="timingOcrDetection">-</span></div>
+          <div>Region Merging: <span id="timingMerge">-</span></div>
+          <div>Canvas Redaction: <span id="timingRedaction">-</span></div>
+          <div>Perception Fusion: <span id="timingFusion">-</span></div>
+          <div>Gateway Round-Trip: <span id="timingGateway">-</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="lib/vision.bundle.js"></script>
+  <script src="lib/ocr.bundle.js"></script>
+  <script src="pii-detector.js"></script>
+  <script src="screenshot-redactor.js"></script>
+  <script src="perception-fusion.js"></script>
+  <script src="change-detector.js"></script>
+  <script src="task-parser.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

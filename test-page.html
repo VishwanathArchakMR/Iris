@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SIH Demo Test Page - Milestone 8</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      max-width: 650px;
+      margin: 40px auto;
+      padding: 20px;
+      line-height: 1.6;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      min-height: 2000px; /* Provides vertical height so SCROLL is clearly visible */
+    }
+    h2 { color: #333; }
+    .box { background: #f9f9f9; padding: 14px; border-radius: 6px; margin-bottom: 20px; }
+    input[type="email"], input[type="password"], input[type="text"] {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px;
+      margin-top: 4px;
+      margin-bottom: 12px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    #submit-button {
+      padding: 10px 18px;
+      font-size: 14px;
+      font-weight: bold;
+      cursor: pointer;
+      border: 1px solid #888;
+      border-radius: 4px;
+      transition: background-color 0.2s;
+    }
+    #confirmation-msg {
+      display: none;
+      color: #2e7d32;
+      background-color: #e8f5e9;
+      padding: 8px;
+      margin-top: 10px;
+      border-radius: 4px;
+      font-weight: bold;
+    }
+    .toggle-btn {
+      background-color: #0288d1;
+      color: white;
+      border: none;
+      padding: 8px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+    .scroll-target-box {
+      margin-top: 500px;
+      background: #e3f2fd;
+      border-left: 4px solid #1976d2;
+      padding: 16px;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <h2>SIH 2026 - Agent Perception &amp; Action Test Page</h2>
+  <p>This test page demonstrates on-device PII redaction, visual context perception (DOM &amp; screenshot), and safe action execution (CLICK / SCROLL):</p>
+  
+  <div class="box">
+    <h3>Synthetic User Profile (PII):</h3>
+    <p>Contact me at test.user@example.com</p>
+    <p>Call me at 9876543210</p>
+    <p>My password is Sup3rSecret!</p>
+    <p>Card number: 4111111111111111</p>
+  </div>
+
+  <div class="box">
+    <h3>Interactive Form Inputs (DOM Visual Elements):</h3>
+    <label for="demo-email"><strong>Email:</strong></label>
+    <input type="email" id="demo-email" placeholder="Email" value="test.user@example.com" />
+
+    <label for="demo-password"><strong>Password:</strong></label>
+    <input type="password" id="demo-password" placeholder="Password" value="Sup3rSecret!" />
+
+    <label for="demo-card"><strong>Credit Card:</strong></label>
+    <input type="text" id="demo-card" name="card_number" placeholder="Card number" value="4111111111111111" />
+
+    <!-- Hidden element test: extractVisualElements() must safely skip this -->
+    <input type="text" id="hidden-field" style="display: none;" value="This should be hidden" />
+  </div>
+
+  <div class="box">
+    <h3>Milestone 12 — Rendered Visual PII in Canvas (No DOM Text Node):</h3>
+    <p style="font-size: 13px; color: #555;">The box below is rendered entirely inside an HTML5 <code>&lt;canvas&gt;</code> element. It contains no DOM text or input fields (invisible to M8/M11 DOM inspection), but is detectable by M12 on-device OCR:</p>
+    <canvas id="renderedPiiCanvas" width="450" height="60" style="border: 1px dashed #888; background: #ffffff; border-radius: 4px; display: block; margin: 8px 0;"></canvas>
+  </div>
+
+  <div class="box">
+    <h3>Ordinary Public Notice (Conservative Non-Sensitive Text):</h3>
+    <p>Indian Space Research Organisation (ISRO) Department of Space — SIH 2026 Problem Statement SIH26171. Public domain information and system documentation. This block contains no credentials or PII and must NOT be redacted.</p>
+  </div>
+
+  <div class="box">
+    <h3>Active Action Mode:</h3>
+    <button type="button" class="toggle-btn" id="toggleModeBtn">Switch to SCROLL Demo Text</button>
+    
+    <div id="modeContent">
+      <p id="modeDesc"><strong>Current Mode: CLICK.</strong> Contains the keyword <em>submit</em> to trigger the <code>CLICK → SUBMIT_BUTTON</code> rule.</p>
+      <button type="button" id="submit-button">Submit Form</button>
+      <div id="confirmation-msg">✓ Click Executed! Form Submitted Successfully.</div>
+    </div>
+  </div>
+
+  <div class="box" style="border-left: 4px solid #4a148c;">
+    <h3>Milestone 14 — Semantic Target Resolution &amp; Screen Changes:</h3>
+    <p style="font-size: 13px; color: #555;">Demonstrates local semantic target resolution (<code>LOGIN_BUTTON</code>, <code>NEXT_BUTTON</code>, <code>SEARCH_INPUT</code>) and triggers dynamic screen changes verified by change detection:</p>
+    
+    <div style="margin-bottom: 12px;">
+      <label for="search-input"><strong>Search Knowledge Base:</strong></label>
+      <input type="text" id="search-input" placeholder="Search knowledge base..." style="margin-top: 4px;" />
+    </div>
+
+    <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 10px;">
+      <button type="button" id="login-button" style="padding: 8px 16px; background: #4a148c; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Log In</button>
+      <button type="button" id="next-button" style="padding: 8px 16px; background: #00695c; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Next Step &rarr;</button>
+    </div>
+
+    <div id="action-feedback-box" style="display: none; padding: 10px; border-radius: 4px; font-weight: bold; font-size: 13px; margin-top: 8px;"></div>
+  </div>
+
+  <div class="box" style="border-left: 4px solid #e65100;">
+    <h3>Milestone 15 — Generalized Perception-Grounded Elements:</h3>
+    <p style="font-size: 13px; color: #555;">Elements without fixed keyword tags (not login, next, search, or submit). Local on-device fuzzy text similarity grounds task requests to these elements via DOM type + label:</p>
+    
+    <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 10px;">
+      <button type="button" id="cart-button" style="padding: 8px 16px; background: #e65100; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Add to Cart</button>
+      <button type="button" id="faq-button" style="padding: 8px 16px; background: #37474f; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Expand FAQ</button>
+      <button type="button" id="pdf-button" style="padding: 8px 16px; background: #1565c0; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">Download PDF</button>
+    </div>
+
+    <div id="cart-counter" style="font-size: 13px; color: #333; margin-top: 4px;">Items in cart: <strong>0</strong></div>
+    <div id="faq-content" style="display: none; margin-top: 8px; padding: 8px; background: #f5f5f5; border: 1px solid #ccc; border-radius: 4px; font-size: 12px;">
+      <strong>Q: How does privacy-first perception work?</strong><br/>
+      A: All OCR, SqueezeNet classification, and PII masking occur client-side before any network payload leaves your machine.
+    </div>
+  </div>
+
+  <div class="box" style="border-left: 4px solid #00897b;">
+    <h3>Milestone 16 — Generic Form-Field Perception &amp; Safe FILL:</h3>
+    <p style="font-size: 13px; color: #555;">Form fields with local DOM label associations (label for, aria-label, nearby text) for generic grounded FILL without keyword tags:</p>
+
+    <!-- 1. label-for associated inputs -->
+    <div style="margin-bottom: 10px;">
+      <label for="applicant-name"><strong>Full Name:</strong></label>
+      <input type="text" id="applicant-name" placeholder="First and last name" />
+    </div>
+
+    <div style="margin-bottom: 10px;">
+      <label for="applicant-email"><strong>Email Address:</strong></label>
+      <input type="email" id="applicant-email" placeholder="name@domain.com" />
+    </div>
+
+    <div style="margin-bottom: 10px;">
+      <label for="applicant-notes"><strong>Application Notes:</strong></label>
+      <textarea id="applicant-notes" rows="2" placeholder="Enter notes here..." style="width: 100%; box-sizing: border-box; padding: 8px; margin-top: 4px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px;"></textarea>
+    </div>
+
+    <!-- 2. aria-label only (no visible label element) -->
+    <div style="margin-bottom: 10px;">
+      <input type="text" id="project-code" aria-label="Project Code" placeholder="Project Code (aria-label only)" />
+    </div>
+
+    <!-- 3. Nearby text only (no for attribute, no aria) -->
+    <div class="form-group" style="margin-bottom: 10px;">
+      <span style="font-size: 13px; font-weight: bold; color: #333;">City of Residence:</span>
+      <input type="text" id="city-field" placeholder="Enter city" style="margin-top: 4px;" />
+    </div>
+
+    <div id="fill-feedback-box" style="display: none; padding: 8px 12px; background: #e0f2f1; color: #004d40; border: 1px solid #80cbc4; border-radius: 4px; font-size: 12px; font-weight: bold; margin-top: 6px;">
+      ✓ Form field updated locally via agent!
+    </div>
+  </div>
+
+  <div class="scroll-target-box">
+    <h3>📍 500px Down — Scroll Destination</h3>
+    <p>If the extension executed <code>SCROLL → PAGE (amount: 500)</code>, this blue box will have smoothly scrolled into view!</p>
+  </div>
+
+  <script>
+    // 1. Click execution visual feedback
+    const submitBtn = document.getElementById("submit-button");
+    const confirmMsg = document.getElementById("confirmation-msg");
+
+    submitBtn.addEventListener("click", () => {
+      submitBtn.innerText = "Clicked!";
+      submitBtn.style.backgroundColor = "#2e7d32";
+      submitBtn.style.color = "#ffffff";
+      confirmMsg.style.display = "block";
+    });
+
+    // 2. Convenience toggle between CLICK keywords ("submit") and SCROLL keywords ("scroll down for more")
+    let isScrollMode = false;
+    const toggleBtn = document.getElementById("toggleModeBtn");
+    const modeDesc = document.getElementById("modeDesc");
+
+    toggleBtn.addEventListener("click", () => {
+      isScrollMode = !isScrollMode;
+      if (isScrollMode) {
+        toggleBtn.innerText = "Switch back to CLICK Demo Text";
+        modeDesc.innerHTML = "<strong>Current Mode: SCROLL.</strong> Please scroll down to read more details and explore the content below.";
+      } else {
+        toggleBtn.innerText = "Switch to SCROLL Demo Text";
+        modeDesc.innerHTML = "<strong>Current Mode: CLICK.</strong> Contains the keyword <em>submit</em> to trigger the <code>CLICK → SUBMIT_BUTTON</code> rule.";
+      }
+    });
+
+    // 3. Milestone 12: Draw synthetic sensitive visual PII onto canvas (no DOM text node)
+    const piiCanvas = document.getElementById("renderedPiiCanvas");
+    if (piiCanvas) {
+      const piiCtx = piiCanvas.getContext("2d");
+      piiCtx.fillStyle = "#ffffff";
+      piiCtx.fillRect(0, 0, piiCanvas.width, piiCanvas.height);
+      piiCtx.fillStyle = "#111111";
+      piiCtx.font = "bold 16px sans-serif";
+      piiCtx.fillText("PII: ocr.secret@example.com", 20, 36);
+    }
+
+    // 4. Milestone 14: Interactive handlers for Semantic Target Resolution & dynamic DOM changes
+    const loginBtn = document.getElementById("login-button");
+    const nextBtn = document.getElementById("next-button");
+    const searchInput = document.getElementById("search-input");
+    const feedbackBox = document.getElementById("action-feedback-box");
+
+    if (loginBtn) {
+      loginBtn.addEventListener("click", () => {
+        loginBtn.innerText = "Logged In!";
+        loginBtn.style.backgroundColor = "#2e7d32";
+        feedbackBox.style.display = "block";
+        feedbackBox.style.backgroundColor = "#ede7f6";
+        feedbackBox.style.color = "#4a148c";
+        feedbackBox.style.border = "1px solid #b39ddb";
+        feedbackBox.innerHTML = "✓ Semantic Target Resolved: LOGIN_BUTTON executed. User authenticated.";
+      });
+    }
+
+    if (nextBtn) {
+      nextBtn.addEventListener("click", () => {
+        nextBtn.innerText = "Advanced!";
+        nextBtn.style.backgroundColor = "#004d40";
+        feedbackBox.style.display = "block";
+        feedbackBox.style.backgroundColor = "#e0f2f1";
+        feedbackBox.style.color = "#004d40";
+        feedbackBox.style.border = "1px solid #80cbc4";
+        feedbackBox.innerHTML = "✓ Semantic Target Resolved: NEXT_BUTTON executed. Advanced to next workflow step.";
+      });
+    }
+
+    if (searchInput) {
+      searchInput.addEventListener("focus", () => {
+        feedbackBox.style.display = "block";
+        feedbackBox.style.backgroundColor = "#e1f5fe";
+        feedbackBox.style.color = "#01579b";
+        feedbackBox.style.border = "1px solid #81d4fa";
+        feedbackBox.innerHTML = "✓ Semantic Target Resolved: SEARCH_INPUT focused and active.";
+      });
+    }
+
+    // 4. Milestone 15: Generalized Grounded Button Listeners
+    const cartBtn = document.getElementById("cart-button");
+    const cartCounter = document.getElementById("cart-counter");
+    let cartCount = 0;
+    if (cartBtn) {
+      cartBtn.addEventListener("click", () => {
+        cartCount++;
+        cartBtn.innerText = `Added (${cartCount})!`;
+        cartBtn.style.backgroundColor = "#2e7d32";
+        cartCounter.innerHTML = `Items in cart: <strong>${cartCount}</strong>`;
+        feedbackBox.style.display = "block";
+        feedbackBox.style.backgroundColor = "#fff3e0";
+        feedbackBox.style.color = "#e65100";
+        feedbackBox.style.border = "1px solid #ffcc80";
+        feedbackBox.innerHTML = `✓ Grounded Action: 'Add to Cart' executed! Cart count: ${cartCount}.`;
+      });
+    }
+
+    const faqBtn = document.getElementById("faq-button");
+    const faqContent = document.getElementById("faq-content");
+    if (faqBtn) {
+      faqBtn.addEventListener("click", () => {
+        const isHidden = faqContent.style.display === "none";
+        faqContent.style.display = isHidden ? "block" : "none";
+        faqBtn.innerText = isHidden ? "Collapse FAQ" : "Expand FAQ";
+        feedbackBox.style.display = "block";
+        feedbackBox.style.backgroundColor = "#eceff1";
+        feedbackBox.style.color = "#37474f";
+        feedbackBox.style.border = "1px solid #b0bec5";
+        feedbackBox.innerHTML = `✓ Grounded Action: 'Expand FAQ' executed! FAQ toggled.`;
+      });
+    }
+
+    const pdfBtn = document.getElementById("pdf-button");
+    if (pdfBtn) {
+      pdfBtn.addEventListener("click", () => {
+        pdfBtn.innerText = "Downloaded!";
+        pdfBtn.style.backgroundColor = "#2e7d32";
+        feedbackBox.style.display = "block";
+        feedbackBox.style.backgroundColor = "#e3f2fd";
+        feedbackBox.style.color = "#0d47a1";
+        feedbackBox.style.border = "1px solid #90caf9";
+        feedbackBox.innerHTML = "✓ Grounded Action: 'Download PDF' executed! Document generated.";
+      });
+    }
+
+    // Milestone 16: Safe fill visual change indicators
+    const fillFeedback = document.getElementById("fill-feedback-box");
+    ["applicant-name", "applicant-email", "applicant-notes", "project-code", "city-field"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.addEventListener("input", () => {
+          if (fillFeedback) {
+            fillFeedback.style.display = "block";
+            fillFeedback.innerText = `✓ Field '${id}' modified via input event!`;
+          }
+        });
+      }
+    });
+  </script>
+</body>
+</html>
