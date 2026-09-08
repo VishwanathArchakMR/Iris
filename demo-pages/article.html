@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>On-Device AI Architecture - SIH26171 Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #fdfdfd;
+      color: #1e293b;
+      line-height: 1.7;
+      padding: 40px 24px 100px 24px;
+    }
+    .article-container {
+      max-width: 720px;
+      margin: 0 auto;
+    }
+    .meta { font-size: 13px; color: #64748b; margin-bottom: 12px; }
+    h1 { font-size: 28px; font-weight: 800; color: #0f172a; margin-bottom: 16px; line-height: 1.3; }
+    h2 { font-size: 20px; font-weight: 700; color: #1e293b; margin-top: 32px; margin-bottom: 12px; }
+    h3 { font-size: 16px; font-weight: 600; color: #334155; margin-top: 24px; margin-bottom: 8px; }
+    p { margin-bottom: 16px; font-size: 15px; color: #334155; }
+    a { color: #2563eb; text-decoration: underline; }
+    a:hover { color: #1d4ed8; }
+    .btn-read-more {
+      display: inline-block;
+      background: #2563eb;
+      color: #ffffff;
+      padding: 10px 20px;
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      margin: 20px 0;
+      transition: background 0.15s;
+    }
+    .btn-read-more:hover { background: #1d4ed8; }
+    .box {
+      background: #f8fafc;
+      border-left: 4px solid #3b82f6;
+      padding: 16px;
+      margin: 20px 0;
+      border-radius: 0 8px 8px 0;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="article-container">
+    <div class="meta">Published September 2026 &bull; Technical Report &bull; 6 min read</div>
+    <h1>On-Device Visual Perception for Light-weight Browser Agents</h1>
+
+    <p>
+      Autonomous web agents have historically relied on streaming raw viewport screenshots to massive cloud vision-language models. While effective in unconstrained benchmarks, this approach suffers from significant privacy leakage, prohibitive latency, and unpredictable token consumption.
+    </p>
+
+    <div class="box">
+      <strong>Key Finding:</strong> Local visual perception combined with DOM accessibility semantics delivers deterministic grounding in sub-100ms cycles without transmitting a single unredacted pixel or user credential.
+    </div>
+
+    <h2>1. The Privacy Boundary Invariant</h2>
+    <p>
+      In our architecture, the client extension enforces an uncompromised privacy boundary. All sensitive data—including password fields, email addresses, phone numbers, and OCR-detected tokens—are identified on-device. Before any payload leaves the browser context, raw coordinates and values are masked in-memory.
+    </p>
+    <p>
+      Furthermore, form filling values entered by the user or specified in natural language tasks remain strictly local in popup memory. The remote reasoning gateway receives only structural questions and sanitized field labels.
+    </p>
+
+    <h2>2. Multimodal Fusion and Grounding</h2>
+    <p>
+      Rather than relying on fragile single-modality heuristics, the agent fusions three independent streams:
+    </p>
+    <p>
+      First, the DOM accessibility tree provides semantic tags such as <code>role="button"</code>, <code>aria-label</code>, and question containers. Second, an on-device ONNX vision model classifies high-level visual scenes. Third, a local OCR pipeline verifies non-DOM text elements.
+    </p>
+
+    <button id="btnReadMore" class="btn-read-more" onclick="expandArticle()">Read More</button>
+
+    <div id="extendedContent" style="display: none;">
+      <h2>3. The Human-in-the-Loop Safety Gate</h2>
+      <p>
+        Autonomous execution is safe for navigation and form field entry. However, consequential actions—such as clicking Submit, Confirm, Transfer, or Purchase—pose irreversible side effects.
+      </p>
+      <p>
+        Our local safety gate halts the agent loop whenever a high-impact action is proposed. A non-dismissible human approval modal presents the exact action, target, and risk justification. Only upon explicit human consent is the action dispatched.
+      </p>
+      <p>
+        Explore our documentation: <a href="simple-form.html">Form Grounding Demo</a>, <a href="shopping.html">E-Commerce Demo</a>, or <a href="controls.html">Interactive Controls Demo</a>.
+      </p>
+    </div>
+  </div>
+
+  <script>
+    function expandArticle() {
+      document.getElementById("extendedContent").style.display = "block";
+      document.getElementById("btnReadMore").style.display = "none";
+    }
+  </script>
+</body>
+</html>

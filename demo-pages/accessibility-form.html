@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Accessible Form Semantics - SIH26171 Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #f8fafc;
+      color: #0f172a;
+      padding: 30px 20px;
+      display: flex;
+      justify-content: center;
+    }
+    .form-card {
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-radius: 12px;
+      max-width: 520px;
+      width: 100%;
+      padding: 28px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+    }
+    h1 { font-size: 20px; font-weight: 700; margin-bottom: 6px; color: #1e293b; }
+    .desc { font-size: 13px; color: #64748b; margin-bottom: 24px; line-height: 1.4; }
+    .question-block {
+      margin-bottom: 20px;
+      padding: 16px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+    }
+    .q-title {
+      display: block;
+      font-size: 14px;
+      font-weight: 600;
+      color: #1e293b;
+      margin-bottom: 8px;
+    }
+    .field-input {
+      width: 100%;
+      padding: 10px 12px;
+      font-size: 14px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      background: #ffffff;
+    }
+    .field-input:focus {
+      outline: none;
+      border-color: #2563eb;
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+    }
+    .btn-submit {
+      width: 100%;
+      background: #2563eb;
+      color: #ffffff;
+      padding: 12px;
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .btn-submit:hover { background: #1d4ed8; }
+    #resultStatus {
+      margin-top: 16px;
+      padding: 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      display: none;
+    }
+    #resultStatus.success {
+      display: block;
+      background: #ecfdf5;
+      color: #065f46;
+      border: 1px solid #a7f3d0;
+    }
+  </style>
+</head>
+<body>
+  <div class="form-card">
+    <h1>Accessible Semantics Test Page</h1>
+    <p class="desc">Tests perception grounding across ARIA attributes, semantic question containers, and explicit labels.</p>
+
+    <form id="ariaForm" onsubmit="event.preventDefault(); handleSubmit();">
+      <!-- 1. Labelled via explicit for attribute -->
+      <div class="question-block" role="group">
+        <label for="fullNameInput" class="q-title">Full Name</label>
+        <input type="text" id="fullNameInput" name="full_name" class="field-input" placeholder="e.g. Sanketh Mallikarjuna" required autocomplete="off" />
+      </div>
+
+      <!-- 2. Labelled via aria-label -->
+      <div class="question-block" role="group">
+        <span class="q-title" id="lblEmailDesc">Work Email</span>
+        <input type="email" class="field-input" aria-label="Work Email" name="work_email" placeholder="you@organization.org" required autocomplete="off" />
+      </div>
+
+      <!-- 3. Labelled via aria-labelledby -->
+      <div class="question-block" role="group">
+        <span class="q-title" id="addressHeader">Physical Street Address</span>
+        <input type="text" class="field-input" aria-labelledby="addressHeader" name="street_address" placeholder="123 Main Street" required autocomplete="off" />
+      </div>
+
+      <!-- 4. Labelled via placeholder & name attribute -->
+      <div class="question-block" role="group">
+        <span class="q-title">Contact Telephone</span>
+        <input type="tel" class="field-input" name="phone_number" placeholder="Phone Number" required autocomplete="off" />
+      </div>
+
+      <!-- 5. Accessible Submit Button -->
+      <button type="submit" id="submitBtn" class="btn-submit" aria-label="Submit Registration Application">
+        Submit Application
+      </button>
+    </form>
+
+    <div id="resultStatus"></div>
+  </div>
+
+  <script>
+    function handleSubmit() {
+      const res = document.getElementById("resultStatus");
+      res.className = "success";
+      res.textContent = "Accessible registration submitted successfully!";
+    }
+  </script>
+</body>
+</html>

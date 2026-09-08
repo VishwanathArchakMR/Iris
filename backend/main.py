@@ -4,6 +4,7 @@ Milestones 3–6: Receives sanitized context and computes rule-based agent decis
 Milestone 13: Secure Sanitized Visual Agent Gateway (POST /api/visual-context).
 """
 
+import os
 import json
 import uuid
 import difflib
@@ -11,6 +12,7 @@ import re
 from typing import Optional, List, Dict, Any, Tuple, Protocol
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator
 
 app = FastAPI(title="SIH26171 Agent Decision & Visual Gateway Backend")
@@ -23,6 +25,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+PROJECT_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+@app.get("/test-page.html")
+async def serve_test_page():
+    """Serves the test page over local HTTP for generic browser agent testing."""
+    test_page_path = os.path.join(PROJECT_ROOT_DIR, "test-page.html")
+    if os.path.exists(test_page_path):
+        return FileResponse(test_page_path, media_type="text/html")
+    raise HTTPException(status_code=404, detail="test-page.html not found")
+
+@app.get("/demo-pages/{page_name}")
+async def serve_demo_page(page_name: str):
+    """Serves local demo pages for SIH cross-website judging demonstration."""
+    safe_name = os.path.basename(page_name)
+    demo_page_path = os.path.join(PROJECT_ROOT_DIR, "demo-pages", safe_name)
+    if os.path.exists(demo_page_path):
+        return FileResponse(demo_page_path, media_type="text/html")
+    raise HTTPException(status_code=404, detail=f"Demo page {safe_name} not found")
 
 # =====================================================================
 # Milestones 3–6: Text-Only Sanitized Context (Preserved & Backwards-Compatible)
@@ -160,24 +181,55 @@ class CloudMultimodalAgentProvider:
         )
 
 def _normalize(s: str) -> str:
-    return (s or "").strip().lower()
+    cleaned = (s or "").strip().lower()
+    cleaned = re.sub(r"[\*:#_\-\/\\]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+SEMANTIC_SYNONYMS = {
+    "name": {"name", "full name", "applicant name", "your name", "first name", "student name", "candidate name"},
+    "full name": {"name", "full name", "applicant name", "your name"},
+    "email": {"email", "email address", "your email", "e mail", "mail"},
+    "email address": {"email", "email address", "your email", "e mail", "mail"},
+    "address": {"address", "street address", "home address", "residential address", "permanent address", "postal address"},
+    "street address": {"address", "street address", "home address"},
+    "phone": {"phone", "phone number", "mobile", "mobile number", "contact number", "telephone"},
+    "phone number": {"phone", "phone number", "mobile", "mobile number", "contact number"},
+    "city": {"city", "city of residence", "town", "place"},
+}
 
 def _match_score(task_lower: str, label: str) -> float:
     """
     Deterministic local text-similarity score between the task and an element's
     visible label. Pure stdlib (difflib) — no ML, no external API, no network.
-    Combines sequence-similarity with a token-overlap bonus so partial phrase
-    matches (e.g. task 'add this to cart' vs label 'Add to Cart') score well.
+    Requires meaningful token overlap or direct substring inclusion to prevent
+    spurious character-anagram false positives on completely unrelated elements.
     """
-    label_norm = _normalize(label)
-    if not label_norm:
+    t = _normalize(task_lower)
+    l = _normalize(label)
+    if not t or not l:
         return 0.0
-    seq_score = difflib.SequenceMatcher(None, task_lower, label_norm).ratio()
-    task_tokens = set(task_lower.split())
-    label_tokens = set(label_norm.split())
-    overlap = len(task_tokens & label_tokens)
-    overlap_score = overlap / max(1, len(label_tokens))
-    return max(seq_score, overlap_score)
+    if t == l:
+        return 1.0
+
+    # Check pre-registered semantic synonyms (e.g. "full name" <-> "name", "street address" <-> "address")
+    if t in SEMANTIC_SYNONYMS and l in SEMANTIC_SYNONYMS[t]:
+        return 0.95
+    if l in SEMANTIC_SYNONYMS and t in SEMANTIC_SYNONYMS[l]:
+        return 0.95
+
+    if l in t:
+        return max(0.85, len(l) / len(t))
+    if t in l:
+        return max(0.80, len(t) / len(l))
+    t_tokens = set(t.split())
+    l_tokens = set(l.split())
+    overlap = len(t_tokens & l_tokens)
+    if overlap == 0:
+        return 0.0
+    overlap_ratio = overlap / max(1, len(l_tokens))
+    seq_ratio = difflib.SequenceMatcher(None, t, l).ratio()
+    return max(overlap_ratio, seq_ratio)
 
 class DemoAgentProvider:
     """
@@ -191,75 +243,145 @@ class DemoAgentProvider:
         redacted_sample = (context.get("redactedSample") or "").lower()
         field_plan = context.get("fieldPlan") or []
 
-        # Signal 0: Explicit Sanitized Field Plan for Form Filling (Milestone 16)
+        # Signal 0: Explicit Sanitized Field Plan for Form Filling (Milestone 16 & 17)
         # Bounded deterministic grounding of sanitized field hints (no values)
-        if field_plan and isinstance(field_plan, list):
-            FORM_FIELD_TYPES = {"input", "textarea", "select"}
-            plan_actions = []
-            for item in field_plan:
+        if field_plan and isinstance(field_plan, list) and len(field_plan) > 0:
+            FORM_FIELD_TYPES = {"input", "textarea", "select", "checkbox", "radio", "textbox"}
+            loop_step = context.get("loopStep", 1)
+            step_idx = (loop_step - 1) if isinstance(loop_step, int) else 0
+
+            # Only process if step_idx is within bounds of field_plan
+            if 0 <= step_idx < len(field_plan):
+                item = field_plan[step_idx]
                 hint = ""
                 if isinstance(item, dict):
                     hint = item.get("fieldHint") or item.get("hint") or item.get("label") or ""
                 elif isinstance(item, str):
                     hint = item
                 hint_lower = (hint or "").strip().lower()
-                if not hint_lower:
-                    continue
 
-                best_idx, best_score = None, 0.0
-                for i, el in enumerate(elements):
-                    el_type = str(el.get("type", "")).lower()
-                    if el_type not in FORM_FIELD_TYPES:
-                        continue
-                    score = _match_score(hint_lower, str(el.get("label", "")))
-                    if score > best_score:
-                        best_score, best_idx = score, i
+                if hint_lower:
+                    candidates = []
+                    for i, el in enumerate(elements):
+                        el_type = str(el.get("type", "")).lower()
+                        if el_type not in FORM_FIELD_TYPES:
+                            continue
+                        if el.get("disabled") or str(el.get("aria-disabled")).lower() == "true":
+                            continue
+                        label_score = _match_score(hint_lower, str(el.get("label", "")))
+                        placeholder_score = _match_score(hint_lower, str(el.get("placeholder", ""))) if el.get("placeholder") else 0.0
+                        aria_score = _match_score(hint_lower, str(el.get("ariaLabel", ""))) if el.get("ariaLabel") else 0.0
+                        title_score = _match_score(hint_lower, str(el.get("title", ""))) if el.get("title") else 0.0
+                        best_score = max(label_score, placeholder_score, aria_score, title_score)
+                        if best_score >= 0.35:
+                            candidates.append((best_score, i, el))
 
-                if best_idx is not None and best_score >= 0.35:
-                    el = elements[best_idx]
-                    plan_actions.append({
-                        "action": "FILL",
-                        "targetIndex": best_idx,
-                        "targetType": el.get("type"),
-                        "targetLabel": str(el.get("label", ""))[:60],
-                        "groundingScore": round(best_score, 3),
-                        "groundingMethod": "local-fuzzy-match",
-                    })
+                    candidates.sort(key=lambda x: x[0], reverse=True)
+                    if candidates:
+                        # Ambiguity check
+                        if (len(candidates) > 1 and candidates[1][0] >= 0.55 and
+                            abs(candidates[0][0] - candidates[1][0]) < 0.05 and
+                            _normalize(candidates[0][2].get("label", "")) != _normalize(candidates[1][2].get("label", ""))):
+                            return {
+                                "action": "NONE",
+                                "target": None,
+                                "groundingScore": round(candidates[0][0], 3),
+                                "groundingMethod": "ambiguity-rejection"
+                            }, f"Ambiguous form field target for '{hint_lower}': multiple fields matched with similar confidence. Execution rejected for safety."
 
-            if plan_actions:
-                loop_step = context.get("loopStep", 1)
-                step_idx = (loop_step - 1) if isinstance(loop_step, int) else 0
-                selected = plan_actions[step_idx] if 0 <= step_idx < len(plan_actions) else plan_actions[0]
-                reasoning = (
-                    f"Sanitized field plan resolved {len(plan_actions)} form field(s). "
-                    f"Selected action for target '{selected['targetLabel']}' with score {selected['groundingScore']} "
-                    "(difflib deterministic local grounding — no literal values received)."
-                )
-                action_copy = dict(selected)
-                action_copy["plan"] = plan_actions
-                return action_copy, reasoning
+                        best_score, best_idx, el = candidates[0]
+                        selected = {
+                            "action": "FILL",
+                            "targetIndex": best_idx,
+                            "targetType": el.get("type"),
+                            "targetLabel": str(el.get("label", ""))[:60],
+                            "groundingScore": round(best_score, 3),
+                            "groundingMethod": "local-fuzzy-match",
+                        }
+                        reasoning = (
+                            f"Task requested form fill for '{hint}'. Local on-device grounding matched "
+                            f"element #{best_idx} ({el.get('type')}: '{el.get('label')}') with score {best_score:.2f} "
+                            "via deterministic difflib similarity."
+                        )
+
+                        # Build plan actions list for test assertions compatibility (test_backend_fill_action_grounding)
+                        all_plan_actions = []
+                        for p_item in field_plan:
+                            p_hint = (p_item.get("fieldHint") or p_item.get("hint") or "") if isinstance(p_item, dict) else str(p_item)
+                            p_hint_lower = p_hint.strip().lower()
+                            p_cands = []
+                            for pi, pel in enumerate(elements):
+                                if str(pel.get("type", "")).lower() in FORM_FIELD_TYPES and not pel.get("disabled"):
+                                    ps = max(_match_score(p_hint_lower, str(pel.get("label", ""))),
+                                             _match_score(p_hint_lower, str(pel.get("placeholder", ""))) if pel.get("placeholder") else 0.0)
+                                    if ps >= 0.35:
+                                        p_cands.append((ps, pi, pel))
+                            if p_cands:
+                                p_cands.sort(key=lambda x: x[0], reverse=True)
+                                all_plan_actions.append({
+                                    "action": "FILL",
+                                    "targetIndex": p_cands[0][1],
+                                    "targetType": p_cands[0][2].get("type"),
+                                    "targetLabel": str(p_cands[0][2].get("label", ""))[:60],
+                                    "groundingScore": round(p_cands[0][0], 3),
+                                    "groundingMethod": "local-fuzzy-match",
+                                })
+                        action_copy = dict(selected)
+                        if all_plan_actions:
+                            action_copy["plan"] = all_plan_actions
+                        return action_copy, reasoning
+                    else:
+                        # CRITICAL SAFETY (Phase 7): Field could not be grounded.
+                        # NEVER fall back to plan_actions[0] or another field!
+                        return {
+                            "action": "NONE",
+                            "target": None
+                        }, f"Could not safely ground form field for '{hint}'. Execution stopped to prevent filling wrong field."
 
         # Signal 0b: Primary Task intent — FILL / ENTER for form fields
-        if any(task_lower.startswith(p) for p in ["fill ", "fill the ", "enter ", "type into ", "type in ", "type "]):
-            FORM_FIELD_TYPES = {"input", "textarea", "select"}
+        if any(task_lower.startswith(p) for p in ["fill ", "fill the ", "enter ", "type into ", "type in ", "type ", "put "]):
+            FORM_FIELD_TYPES = {"input", "textarea", "select", "checkbox", "radio"}
             hint = task_lower
-            for p in ["fill the ", "fill ", "enter the ", "enter ", "type into ", "type in ", "type "]:
+            for p in ["fill the ", "fill ", "enter the ", "enter ", "type into ", "type in ", "type ", "put "]:
                 if hint.startswith(p):
                     hint = hint[len(p):]
                     break
-            hint = re.sub(r"\s+(?:field|input|box|area)$", "", hint).strip()
+            in_match = re.search(r"\bin(?:to)?\s+(?:the\s+)?(.+?)(?:\s+(?:field|input|box))?$", hint)
+            if in_match:
+                hint = in_match.group(1).strip()
+            else:
+                with_as_match = re.search(r"^(?:the\s+)?(.+?)\s+(?:as|with|to)\s+", hint)
+                if with_as_match:
+                    hint = with_as_match.group(1).strip()
+                else:
+                    hint = re.sub(r"\s+(?:field|input|box|area)$", "", hint).strip()
 
-            best_idx, best_score = None, 0.0
+            candidates = []
             for i, el in enumerate(elements):
                 el_type = str(el.get("type", "")).lower()
                 if el_type not in FORM_FIELD_TYPES:
                     continue
+                if el.get("disabled") or str(el.get("aria-disabled")).lower() == "true":
+                    continue
                 score = _match_score(hint, str(el.get("label", "")))
-                if score > best_score:
-                    best_score, best_idx = score, i
+                placeholder_score = _match_score(hint, str(el.get("placeholder", ""))) if el.get("placeholder") else 0.0
+                best_s = max(score, placeholder_score)
+                if best_s >= 0.35:
+                    candidates.append((best_s, i, el))
 
-            if best_idx is not None and best_score >= 0.35:
-                el = elements[best_idx]
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            if candidates:
+                if (len(candidates) > 1 and candidates[1][0] >= 0.55 and
+                    abs(candidates[0][0] - candidates[1][0]) < 0.05 and
+                    _normalize(candidates[0][2].get("label", "")) != _normalize(candidates[1][2].get("label", ""))):
+                    return {
+                        "action": "NONE",
+                        "target": None,
+                        "groundingScore": round(candidates[0][0], 3),
+                        "groundingMethod": "ambiguity-rejection"
+                    }, f"Ambiguous form field target for '{hint}': multiple fields matched with similar confidence. Execution rejected for safety."
+
+                best_score, best_idx, el = candidates[0]
                 reasoning = (
                     f"Task requested form fill for '{hint}'. Local on-device grounding matched "
                     f"element #{best_idx} ({el.get('type')}: '{el.get('label')}') with score {best_score:.2f} "
@@ -274,82 +396,159 @@ class DemoAgentProvider:
                     "groundingMethod": "local-fuzzy-match",
                 }, reasoning
 
-        # Signal 1: Primary Task intent — Login / Sign In (Milestone 14 Semantic Tag)
+        # Signal 1: Explicit Legacy Semantic Tag signals (Milestone 14 / Milestone 15)
+        # 1a. Login
         if any(keyword in task_lower for keyword in ["login", "log in", "sign in"]):
             button_found = any(
-                str(el.get("semanticTag", "")).upper() == "LOGIN_BUTTON" or
-                "login" in str(el.get("label", "")).lower() or
-                "sign in" in str(el.get("label", "")).lower()
+                str(el.get("semanticTag", "")).upper() == "LOGIN_BUTTON"
                 for el in elements
             )
-            reasoning = (
-                f"Task requested login ('{task}') and sanitized DOM confirmed matching LOGIN_BUTTON. "
-                "Proposing allowlisted action CLICK -> LOGIN_BUTTON."
-                if button_found else
-                f"Task requested login ('{task}'). Proposing allowlisted action CLICK -> LOGIN_BUTTON."
-            )
-            return {"action": "CLICK", "target": "LOGIN_BUTTON"}, reasoning
+            if button_found:
+                reasoning = (
+                    f"Task requested login ('{task}') and sanitized DOM confirmed matching LOGIN_BUTTON. "
+                    "Proposing allowlisted action CLICK -> LOGIN_BUTTON."
+                )
+                return {"action": "CLICK", "target": "LOGIN_BUTTON"}, reasoning
 
-        # Signal 2: Primary Task intent — Next / Continue / Step (Milestone 14 Semantic Tag)
+        # 1b. Next / Continue
         if any(keyword in task_lower for keyword in ["next", "continue", "proceed", "step"]):
             button_found = any(
-                str(el.get("semanticTag", "")).upper() == "NEXT_BUTTON" or
-                "next" in str(el.get("label", "")).lower() or
-                "continue" in str(el.get("label", "")).lower()
+                str(el.get("semanticTag", "")).upper() == "NEXT_BUTTON"
                 for el in elements
             )
-            reasoning = (
-                f"Task requested next step ('{task}') and sanitized DOM confirmed matching NEXT_BUTTON. "
-                "Proposing allowlisted action CLICK -> NEXT_BUTTON."
-                if button_found else
-                f"Task requested next step ('{task}'). Proposing allowlisted action CLICK -> NEXT_BUTTON."
-            )
-            return {"action": "CLICK", "target": "NEXT_BUTTON"}, reasoning
+            if button_found:
+                reasoning = (
+                    f"Task requested next step ('{task}') and sanitized DOM confirmed matching NEXT_BUTTON. "
+                    "Proposing allowlisted action CLICK -> NEXT_BUTTON."
+                )
+                return {"action": "CLICK", "target": "NEXT_BUTTON"}, reasoning
 
-        # Signal 3: Primary Task intent — Search Input (Milestone 14 Semantic Tag)
+        # 1c. Search Input
         if any(keyword in task_lower for keyword in ["search", "query", "find input"]):
             input_found = any(
-                str(el.get("semanticTag", "")).upper() == "SEARCH_INPUT" or
-                "search" in str(el.get("label", "")).lower()
+                str(el.get("semanticTag", "")).upper() == "SEARCH_INPUT"
                 for el in elements
             )
-            reasoning = (
-                f"Task requested search ('{task}') and sanitized DOM confirmed matching SEARCH_INPUT. "
-                "Proposing allowlisted action CLICK -> SEARCH_INPUT."
-                if input_found else
-                f"Task requested search ('{task}'). Proposing allowlisted action CLICK -> SEARCH_INPUT."
-            )
-            return {"action": "CLICK", "target": "SEARCH_INPUT"}, reasoning
+            if input_found:
+                reasoning = (
+                    f"Task requested search ('{task}') and sanitized DOM confirmed matching SEARCH_INPUT. "
+                    "Proposing allowlisted action CLICK -> SEARCH_INPUT."
+                )
+                return {"action": "CLICK", "target": "SEARCH_INPUT"}, reasoning
 
-        # Signal 4: Primary Task intent — Submit / Click
-        if any(keyword in task_lower for keyword in ["submit", "click", "press", "button"]):
-            # Check if sanitized element summary contains a button or submit element
-            button_found = any(
-                str(el.get("semanticTag", "")).upper() == "SUBMIT_BUTTON" or
-                str(el.get("type", "")).lower() == "button" or
-                "submit" in str(el.get("label", "")).lower()
-                for el in elements
-            )
-            reasoning = (
-                f"Task requested click/submit ('{task}') and sanitized DOM confirmed matching button element. "
-                "Proposing allowlisted action CLICK -> SUBMIT_BUTTON."
-                if button_found else
-                f"Task requested click/submit ('{task}'). Proposing allowlisted action CLICK -> SUBMIT_BUTTON."
-            )
-            return {"action": "CLICK", "target": "SUBMIT_BUTTON"}, reasoning
+        # 1d. Legacy Submit: when task is asking for submit button and exactly one matching button exists
+        if any(keyword in task_lower for keyword in ["find the submit", "submit button and click", "submit form", "click submit", "submit"]):
+            matching_submits = [
+                el for el in elements
+                if str(el.get("semanticTag", "")).upper() == "SUBMIT_BUTTON" or
+                (str(el.get("type", "")).lower() in {"button", "link"} and "submit" in str(el.get("label", "")).lower())
+            ]
+            if len(matching_submits) == 1 and any(phrase in task_lower for phrase in ["find the submit button and click it", "click submit", "submit", "submit form", "submit button"]):
+                reasoning = (
+                    f"Task requested submit ('{task}') and sanitized DOM confirmed matching SUBMIT_BUTTON. "
+                    "Proposing allowlisted action CLICK -> SUBMIT_BUTTON."
+                )
+                return {"action": "CLICK", "target": "SUBMIT_BUTTON"}, reasoning
 
-        # Signal 5: Primary Task intent — Scroll / View
-        if any(keyword in task_lower for keyword in ["scroll", "down", "view", "more", "page"]):
-            reasoning = (
-                f"Task requested scrolling ('{task}'). "
-                "Proposing allowlisted action SCROLL -> PAGE with safe bound (500px)."
-            )
-            return {"action": "SCROLL", "target": "PAGE", "amount": 500}, reasoning
+        # Signal 2: SCROLL intents
+        if any(keyword in task_lower for keyword in ["scroll", "scroll down"]):
+            amt = 500
+            amt_match = re.search(r"\b(\d+)(?:\s*(?:pixels|px))?\b", task_lower)
+            if amt_match:
+                parsed_amt = int(amt_match.group(1))
+                amt = max(50, min(parsed_amt, 1500))
+            reasoning = f"Task requested scrolling ('{task}'). Proposing allowlisted action SCROLL -> PAGE with safe bound ({amt}px)."
+            return {"action": "SCROLL", "target": "PAGE", "amount": amt}, reasoning
 
-        # Signal 3: Fall back to existing keyword matching on redactedSample (Milestone 4/6 secondary signal)
-        if "submit" in redacted_sample or "form" in redacted_sample:
+        # Signal 3: Generalized Generic Grounding for buttons, links, and interactive elements
+        ACTIONABLE_TYPES = {"button", "link", "input", "textarea", "select", "checkbox", "radio", "tab", "menuitem", "switch", "element"}
+        GROUNDING_MIN_SCORE = 0.35
+
+        # Clean search phrase
+        target_query = task_lower
+        for prefix in [
+            "click on the button labelled ", "click the button labelled ", "click on the button labeled ", "click the button labeled ",
+            "click the button named ", "click button labelled ", "click button labeled ", "click button named ",
+            "click on the ", "click on ", "click the ", "click ",
+            "press on the ", "press the ", "press ",
+            "tap on the ", "tap the ", "tap ",
+            "open the ", "open ", "navigate to ", "go to "
+        ]:
+            if target_query.startswith(prefix):
+                target_query = target_query[len(prefix):]
+                break
+
+        target_query = re.sub(r"\s+(?:button|link|page|tab)$", "", target_query).strip()
+        target_query = target_query.strip("'\"")
+
+        candidates = []
+        for i, el in enumerate(elements):
+            el_type = str(el.get("type", "")).lower()
+            if el_type not in ACTIONABLE_TYPES:
+                continue
+            if el.get("disabled") or str(el.get("aria-disabled")).lower() == "true":
+                continue
+
+            label_score = max(_match_score(target_query, str(el.get("label", ""))), _match_score(task_lower, str(el.get("label", ""))))
+            title_score = _match_score(target_query, str(el.get("title", ""))) if el.get("title") else 0.0
+            aria_score = _match_score(target_query, str(el.get("ariaLabel", ""))) if el.get("ariaLabel") else 0.0
+            best_s = max(label_score, title_score, aria_score)
+            if best_s >= GROUNDING_MIN_SCORE:
+                candidates.append((best_s, i, el))
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+
+        if candidates:
+            # Ambiguity check: if top 2 candidates are close in score with different labels
+            # or both share the target query token
+            if len(candidates) > 1:
+                cand0_score, cand0_idx, cand0_el = candidates[0]
+                cand1_score, cand1_idx, cand1_el = candidates[1]
+                cand0_label_norm = _normalize(cand0_el.get("label", ""))
+                cand1_label_norm = _normalize(cand1_el.get("label", ""))
+
+                is_ambiguous = False
+                if cand0_label_norm != cand1_label_norm and cand0_score >= 0.45 and cand1_score >= 0.45:
+                    if abs(cand0_score - cand1_score) <= 0.12:
+                        is_ambiguous = True
+                    elif target_query in cand0_label_norm.split() and target_query in cand1_label_norm.split():
+                        is_ambiguous = True
+
+                if is_ambiguous:
+                    top1_label = cand0_el.get("label", "")
+                    top2_label = cand1_el.get("label", "")
+                    return {
+                        "action": "NONE",
+                        "target": None,
+                        "groundingScore": round(cand0_score, 3),
+                        "groundingMethod": "ambiguity-rejection"
+                    }, (
+                        f"Ambiguous action target for '{target_query}': multiple candidate elements "
+                        f"('{top1_label}' vs '{top2_label}') matched with similar confidence. "
+                        "Action rejected for safety."
+                    )
+
+            best_score, best_idx, el = candidates[0]
             reasoning = (
-                "Task intent ambiguous, but sanitized page text contains form/submit keywords. "
+                f"Local on-device grounding matched element #{best_idx} "
+                f"({el.get('type')}: '{el.get('label')}') with score {best_score:.2f} "
+                "via deterministic local text similarity (difflib — no cloud model, no API key)."
+            )
+            return {
+                "action": "CLICK",
+                "targetIndex": best_idx,
+                "targetType": el.get("type", "button"),
+                "targetLabel": str(el.get("label", ""))[:60],
+                "groundingScore": round(best_score, 3),
+                "groundingMethod": "local-fuzzy-match",
+            }, reasoning
+
+        # Signal 4: Secondary keyword matching on redactedSample (Milestones 4/6 fallback)
+        # Security Invariant: Page text alone (e.g. "form" or "submit" on page) must NEVER trigger Submit
+        # unless the explicit user task requested a submit/click action.
+        if ("submit" in redacted_sample or "form" in redacted_sample) and any(keyword in task_lower for keyword in ["submit", "click"]):
+            reasoning = (
+                "Task requested submit and sanitized page text contains form/submit keywords. "
                 "Proposing allowlisted action CLICK -> SUBMIT_BUTTON."
             )
             return {"action": "CLICK", "target": "SUBMIT_BUTTON"}, reasoning
@@ -364,37 +563,6 @@ class DemoAgentProvider:
         if "[redacted_email]" in redacted_sample or "[redacted_password]" in redacted_sample:
             reasoning = "Sanitized page text indicates sensitive fields detected."
             return {"action": "WARN", "target": "SENSITIVE_FIELD_DETECTED"}, reasoning
-
-        # Signal 6: Generalized perception-grounded matching (no fixed keyword list).
-        # Runs only if none of the fixed-target signals above matched.
-        ACTIONABLE_TYPES = {"button", "link", "input", "textarea", "select", "checkbox", "radio"}
-        GROUNDING_MIN_SCORE = 0.35
-
-        best_idx, best_score = None, 0.0
-        for i, el in enumerate(elements):
-            el_type = str(el.get("type", "")).lower()
-            if el_type not in ACTIONABLE_TYPES:
-                continue
-            score = _match_score(task_lower, str(el.get("label", "")))
-            if score > best_score:
-                best_score, best_idx = score, i
-
-        if best_idx is not None and best_score >= GROUNDING_MIN_SCORE:
-            el = elements[best_idx]
-            reasoning = (
-                f"No fixed keyword rule matched task '{task}'. Local on-device grounding "
-                f"matched element #{best_idx} ({el.get('type')}: '{el.get('label')}') "
-                f"with score {best_score:.2f} via deterministic local text similarity "
-                "(difflib — no cloud model, no API key)."
-            )
-            return {
-                "action": "CLICK",
-                "targetIndex": best_idx,
-                "targetType": el.get("type"),
-                "targetLabel": str(el.get("label", ""))[:60],
-                "groundingScore": round(best_score, 3),
-                "groundingMethod": "local-fuzzy-match",
-            }, reasoning
 
         # Default fallback
         reasoning = f"No allowlisted action matched task '{task}' or sanitized page context."

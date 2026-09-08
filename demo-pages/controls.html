@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Interactive Controls - SIH26171 Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #f8fafc;
+      color: #0f172a;
+      padding: 30px 20px;
+    }
+    .container {
+      max-width: 640px;
+      margin: 0 auto;
+      background: #ffffff;
+      padding: 28px;
+      border-radius: 12px;
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+    }
+    h1 { font-size: 22px; font-weight: 700; margin-bottom: 20px; }
+    .tabs { display: flex; border-bottom: 2px solid #e2e8f0; margin-bottom: 20px; }
+    .tab {
+      padding: 10px 18px;
+      font-size: 14px;
+      font-weight: 600;
+      color: #64748b;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+    }
+    .tab.active {
+      color: #2563eb;
+      border-bottom-color: #2563eb;
+    }
+    .section { margin-bottom: 20px; }
+    label.sec-title {
+      display: block;
+      font-size: 13px;
+      font-weight: 700;
+      color: #475569;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 10px;
+    }
+    .control-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+    input[type="search"], select {
+      width: 100%;
+      padding: 9px 12px;
+      font-size: 14px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      background: #ffffff;
+    }
+    .button-group { display: flex; gap: 8px; flex-wrap: wrap; }
+    .btn {
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 6px;
+      cursor: pointer;
+      border: 1px solid transparent;
+    }
+    .btn-primary { background: #2563eb; color: #fff; }
+    .btn-secondary { background: #f1f5f9; color: #334155; border-color: #cbd5e1; }
+    .btn-danger { background: #ef4444; color: #fff; }
+    #statusOutput {
+      margin-top: 16px;
+      padding: 12px;
+      border-radius: 6px;
+      background: #f1f5f9;
+      font-family: monospace;
+      font-size: 13px;
+      color: #1e293b;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Web Component Controls Gallery</h1>
+
+    <!-- Tabs -->
+    <div class="tabs" role="tablist">
+      <div class="tab active" role="tab" id="tabGeneral" onclick="switchTab('General')">General</div>
+      <div class="tab" role="tab" id="tabAdvanced" onclick="switchTab('Advanced')">Advanced Settings</div>
+      <div class="tab" role="tab" id="tabPrivacy" onclick="switchTab('Privacy')">Privacy Controls</div>
+    </div>
+
+    <!-- Search Input -->
+    <div class="section">
+      <label class="sec-title" for="searchQuery">Search Query</label>
+      <input type="search" id="searchQuery" name="search" placeholder="Type search keywords here..." oninput="logAction('Search updated: ' + this.value)" />
+    </div>
+
+    <!-- Dropdown / Select -->
+    <div class="section">
+      <label class="sec-title" for="categorySelect">Category Filter</label>
+      <select id="categorySelect" name="category" onchange="logAction('Category selected: ' + this.value)">
+        <option value="all">All Categories</option>
+        <option value="percept">Visual Perception</option>
+        <option value="grounding">Local Grounding</option>
+        <option value="privacy">Privacy & Masking</option>
+      </select>
+    </div>
+
+    <!-- Checkboxes -->
+    <div class="section">
+      <label class="sec-title">Options</label>
+      <div class="control-row">
+        <input type="checkbox" id="chkAutoRedact" name="autoRedact" checked onchange="logAction('Auto redact: ' + this.checked)" />
+        <label for="chkAutoRedact">Enable automatic offscreen masking</label>
+      </div>
+      <div class="control-row">
+        <input type="checkbox" id="chkStrictSafety" name="strictSafety" checked onchange="logAction('Strict safety gate: ' + this.checked)" />
+        <label for="chkStrictSafety">Enforce human approval for consequential steps</label>
+      </div>
+    </div>
+
+    <!-- Radio Buttons -->
+    <div class="section">
+      <label class="sec-title">Execution Mode</label>
+      <div class="control-row">
+        <input type="radio" id="modeAutonomous" name="execMode" value="auto" checked onchange="logAction('Mode: Autonomous')" />
+        <label for="modeAutonomous">Autonomous (Low/Medium risk)</label>
+      </div>
+      <div class="control-row">
+        <input type="radio" id="modeSupervised" name="execMode" value="supervised" onchange="logAction('Mode: Supervised')" />
+        <label for="modeSupervised">Strictly Supervised</label>
+      </div>
+    </div>
+
+    <!-- Buttons -->
+    <div class="section">
+      <label class="sec-title">Actions</label>
+      <div class="button-group">
+        <button type="button" id="btnSavePreferences" class="btn btn-primary" onclick="logAction('Clicked: Save Preferences')">Save Preferences</button>
+        <button type="button" id="btnResetDefaults" class="btn btn-secondary" onclick="logAction('Clicked: Reset Defaults')">Reset Defaults</button>
+        <button type="button" id="btnClearCache" class="btn btn-danger" onclick="logAction('Clicked: Clear Cache')">Clear Cache</button>
+      </div>
+    </div>
+
+    <div id="statusOutput">Awaiting user interaction...</div>
+  </div>
+
+  <script>
+    function logAction(msg) {
+      document.getElementById("statusOutput").textContent = msg;
+    }
+    function switchTab(name) {
+      document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+      event.target.classList.add("active");
+      logAction("Switched to tab: " + name);
+    }
+  </script>
+</body>
+</html>

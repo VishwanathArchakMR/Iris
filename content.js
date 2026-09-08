@@ -54,11 +54,16 @@ function getSemanticTag(type, label, el = null) {
 
 /**
  * Normalizes label text for safe comparison.
+ * Trims punctuation, colons, asterisks, and excessive whitespace.
  * @param {string} s
  * @returns {string}
  */
 function normalizeLabel(s) {
-  return (s || "").trim().toLowerCase();
+  return (s || "")
+    .toLowerCase()
+    .replace(/[:*#_\-\/\\]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /**
@@ -98,8 +103,8 @@ function executeAction(actionPayload) {
 
   // 1. CLICK Action Execution (Milestone 5, 14 & 15 Generalized Grounding)
   if (action === "CLICK") {
-    // Milestone 15 generalized path: payload has targetIndex + targetType + targetLabel instead of target
-    if (typeof target === "undefined" && typeof actionPayload.targetIndex === "number") {
+    // Generalized grounded path: payload has targetIndex
+    if (typeof actionPayload.targetIndex === "number") {
       const { targetIndex, targetType, targetLabel } = actionPayload;
 
       // Always re-scan the LIVE DOM at execution time — never trust a stale index/bbox
@@ -118,7 +123,7 @@ function executeAction(actionPayload) {
 
       // Check for ambiguous target if multiple elements share identical label
       const matchingCandidates = freshElements.filter(
-        (el) => el.node && el.node.isConnected && el.type === targetType && labelsMatch(el.label, targetLabel)
+        (el) => el.node && el.node.isConnected && (el.type === targetType || ["button", "link", "input", "element"].includes(el.type)) && labelsMatch(el.label, targetLabel)
       );
       const exactMatches = matchingCandidates.filter(c => normalizeLabel(c.label) === normalizeLabel(targetLabel));
       if (exactMatches.length > 1 && (typeof targetIndex !== "number" || !freshElements[targetIndex] || !labelsMatch(freshElements[targetIndex].label, targetLabel))) {
@@ -132,12 +137,13 @@ function executeAction(actionPayload) {
 
       // 1) Best case: index still points at an element of matching type+label.
       if (freshElements[targetIndex]
-          && freshElements[targetIndex].type === targetType
+          && freshElements[targetIndex].node
+          && freshElements[targetIndex].node.isConnected
           && labelsMatch(freshElements[targetIndex].label, targetLabel)) {
         matched = freshElements[targetIndex];
       }
 
-      // 2) Drift fallback: page changed since the perception snapshot — search by type+label only.
+      // 2) Drift fallback: page changed since the perception snapshot — search by matching candidates.
       if (!matched && matchingCandidates.length === 1) {
         matched = matchingCandidates[0];
       }
@@ -149,7 +155,22 @@ function executeAction(actionPayload) {
         };
       }
 
+      // Safety check: reject disabled / read-only targets
+      if (matched.node.disabled || matched.node.getAttribute?.("aria-disabled") === "true") {
+        return {
+          executed: false,
+          reason: "Target element is disabled or read-only"
+        };
+      }
+
       try {
+        // Scroll target into view if needed
+        if (typeof matched.node.scrollIntoView === "function") {
+          try {
+            matched.node.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+          } catch (_) {}
+        }
+
         if (matched.node.tagName && matched.node.tagName.toLowerCase() === "input") {
           matched.node.focus?.();
         }
@@ -157,8 +178,8 @@ function executeAction(actionPayload) {
         return {
           executed: true,
           action: "CLICK",
-          targetType,
-          targetLabel,
+          targetType: matched.type || targetType,
+          targetLabel: matched.label || targetLabel,
           groundedIndex: targetIndex
         };
       } catch (err) {
@@ -198,7 +219,20 @@ function executeAction(actionPayload) {
       };
     }
 
+    // Safety check: reject disabled legacy targets
+    if (element.disabled || element.getAttribute?.("aria-disabled") === "true") {
+      return {
+        executed: false,
+        reason: "Target element is disabled or read-only"
+      };
+    }
+
     try {
+      if (typeof element.scrollIntoView === "function") {
+        try {
+          element.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+        } catch (_) {}
+      }
       if (element.tagName.toLowerCase() === "input") {
         element.focus();
         element.click();
@@ -281,10 +315,11 @@ function executeAction(actionPayload) {
     const tagName = (el.tagName || "").toLowerCase();
     const isInput = tagName === "input";
     const isTextarea = tagName === "textarea";
-    const isContentEditable = el.isContentEditable || el.getAttribute("contenteditable") === "true";
+    const isContentEditable = !!(el.isContentEditable || (el.getAttribute && el.getAttribute("contenteditable") === "true"));
+    const isRoleTextbox = !!(el.getAttribute && el.getAttribute("role") === "textbox");
 
     // 3. Verify matched node is an actual fillable control
-    if (!isInput && !isTextarea && !isContentEditable) {
+    if (!isInput && !isTextarea && !isContentEditable && !isRoleTextbox) {
       return {
         executed: false,
         reason: "Target element is not a fillable form control"
@@ -297,6 +332,21 @@ function executeAction(actionPayload) {
         executed: false,
         reason: "Refused to fill sensitive credentials field (type=password)"
       };
+    }
+
+    // Safety check: reject disabled or read-only targets
+    if (el.disabled || el.readOnly || (el.getAttribute && el.getAttribute("aria-disabled") === "true") || (el.getAttribute && el.getAttribute("readonly") !== null)) {
+      return {
+        executed: false,
+        reason: "Target element is disabled or read-only"
+      };
+    }
+
+    // Scroll element into view if needed
+    if (typeof el.scrollIntoView === "function") {
+      try {
+        el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+      } catch (_) {}
     }
 
     // 5. Set value via native property setter + dispatch input/change events
@@ -313,7 +363,8 @@ function executeAction(actionPayload) {
         }
         el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
         el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
-      } else if (isContentEditable) {
+      } else if (isContentEditable || isRoleTextbox) {
+        if (typeof el.focus === "function") el.focus();
         el.textContent = String(fillValue);
         el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
         el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
@@ -323,8 +374,8 @@ function executeAction(actionPayload) {
       let verified = false;
       if (isInput || isTextarea) {
         verified = el.value === String(fillValue);
-      } else if (isContentEditable) {
-        verified = el.textContent === String(fillValue);
+      } else if (isContentEditable || isRoleTextbox) {
+        verified = el.textContent === String(fillValue) || el.innerText === String(fillValue);
       }
 
       return {
@@ -409,9 +460,10 @@ function getVisibleRect(el) {
 }
 
 /**
- * Milestone 8: Local DOM-based visual element perception (client-side only).
+ * Generic DOM visual perception selector.
+ * Detects visible buttons, links, inputs, textareas, selects, ARIA interactive roles, and headings.
  */
-const VISUAL_SELECTOR = "button, a[href], h1, h2, h3, h4, h5, h6, input, textarea, select, [role='button']";
+const VISUAL_SELECTOR = "button, a[href], input, textarea, select, [role='button'], [role='link'], [role='checkbox'], [role='radio'], [role='combobox'], [role='textbox'], [contenteditable='true'], [role='tab'], [role='menuitem'], [role='switch'], h1, h2, h3, h4, h5, h6, [tabindex]:not([tabindex='-1'])";
 
 /**
  * Humanizes element name attributes (e.g. "full_name" -> "Full Name", "userEmail" -> "User Email").
@@ -430,22 +482,63 @@ function humanizeName(name) {
 }
 
 /**
- * Milestone 16: Resolves an element's visible label strictly via local DOM signals.
- * Follows strict priority order (never inspects .value):
- * 1. <label for="id"> matching element's id
- * 2. Wrapping ancestor <label>
- * 3. aria-label
- * 4. aria-labelledby (resolves referenced element(s) text)
- * 5. placeholder
- * 6. name attribute (humanized)
- * 7. Nearby preceding visible text sibling or enclosing form-group / Google Forms question container
- * 8. Fallback to existing "<type> field" behavior
- *
- * Google Forms Support:
- * Supports Google Forms /viewform public forms for Short answer (input[type="text"]) and
- * Paragraph (textarea) question types. Google Forms uses role="listitem" question containers
- * and aria-labelledby referencing heading elements (e.g. div[role="heading"]).
- * Note: Checkbox grids, file upload, and date picker widgets are not supported.
+ * Checks if an extracted label is generic boilerplate rather than a meaningful semantic title.
+ * @param {string} str
+ * @returns {boolean}
+ */
+function isGenericBoilerplateLabel(str) {
+  const s = (str || "").toLowerCase().trim();
+  if (!s) return true;
+  const boilerplateExact = new Set([
+    "your answer",
+    "enter your answer",
+    "type your answer",
+    "write a response",
+    "required question",
+    "this is a required question",
+    "text field",
+    "input field",
+    "textarea",
+    "*",
+    "short answer text",
+    "long answer text",
+    "option 1",
+    "untitled question"
+  ]);
+  if (boilerplateExact.has(s)) return true;
+  if (/^(?:your\s+answer|required\s+question|\*|text\s+field|input\s+field)$/i.test(s)) return true;
+  return false;
+}
+
+/**
+ * Cleans extracted form field title text by stripping punctuation, colons, and asterisks.
+ * @param {string} str
+ * @returns {string}
+ */
+function cleanFieldTitle(str) {
+  return (str || "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s*\*+\s*$/g, "")
+    .replace(/^\s*\*+\s*/g, "")
+    .replace(/[:*#_\-\/\\]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Resolves an element's visible semantic label strictly via local DOM signals.
+ * Implements strict priority order (never reads .value):
+ * 1. explicitly associated <label for="id">
+ * 2. wrapping ancestor <label>
+ * 3. non-boilerplate aria-label
+ * 4. non-boilerplate aria-labelledby (resolves referenced element(s) text)
+ * 5. enclosing question container (.M7eMe, [role="heading"], .geS5n, .Qr7Oae, .form-group)
+ * 6. associated visible label text (aria-describedby)
+ * 7. name attribute (humanized)
+ * 8. placeholder (non-boilerplate)
+ * 9. title attribute
+ * 10. nearby preceding visible text sibling
+ * 11. type-based fallback ("<type> field")
  *
  * @param {Element} el - DOM form control
  * @param {string} type - Identified element type ("input", "textarea", "select", etc.)
@@ -455,13 +548,14 @@ function extractFormFieldLabel(el, type) {
   const tagName = (el.tagName || "").toLowerCase();
   const elId = el.id ? el.id.trim() : "";
 
-  // 1. <label for="id"> matching element's id
+  // 1. Explicitly associated <label for="id">
   if (elId && typeof document !== "undefined" && document.querySelector) {
     try {
-      const labelFor = document.querySelector(`label[for="${CSS.escape(elId)}"]`);
+      const escapedId = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(elId) : elId;
+      const labelFor = document.querySelector(`label[for="${escapedId}"]`);
       if (labelFor) {
-        const text = (labelFor.innerText || labelFor.textContent || "").trim();
-        if (text) return text;
+        const text = cleanFieldTitle(labelFor.innerText || labelFor.textContent || "");
+        if (text && !isGenericBoilerplateLabel(text)) return text;
       }
     } catch (_) {}
   }
@@ -474,23 +568,26 @@ function extractFormFieldLabel(el, type) {
         const clone = ancestorLabel.cloneNode(true);
         const nestedInputs = clone.querySelectorAll("input, textarea, select");
         nestedInputs.forEach(input => input.remove());
-        const text = (clone.innerText || clone.textContent || "").trim();
-        if (text) return text;
+        const text = cleanFieldTitle(clone.innerText || clone.textContent || "");
+        if (text && !isGenericBoilerplateLabel(text)) return text;
       } catch (_) {}
-      const rawText = (ancestorLabel.innerText || ancestorLabel.textContent || "").trim();
-      if (rawText) return rawText;
+      const rawText = cleanFieldTitle(ancestorLabel.innerText || ancestorLabel.textContent || "");
+      if (rawText && !isGenericBoilerplateLabel(rawText)) return rawText;
     }
   }
 
-  // 3. aria-label
+  // 3. aria-label (only if not generic boilerplate like "Your answer")
   if (el.getAttribute) {
     const ariaLabel = el.getAttribute("aria-label");
     if (ariaLabel && ariaLabel.trim()) {
-      return ariaLabel.trim();
+      const cleaned = cleanFieldTitle(ariaLabel);
+      if (cleaned && !isGenericBoilerplateLabel(cleaned)) {
+        return cleaned;
+      }
     }
   }
 
-  // 4. aria-labelledby (resolve referenced elements)
+  // 4. aria-labelledby (resolve referenced elements, filtering out boilerplate IDs/tokens)
   if (el.getAttribute && typeof document !== "undefined" && document.getElementById) {
     const ariaLabelledBy = el.getAttribute("aria-labelledby");
     if (ariaLabelledBy && ariaLabelledBy.trim()) {
@@ -499,74 +596,128 @@ function extractFormFieldLabel(el, type) {
       for (const id of ids) {
         const refEl = document.getElementById(id);
         if (refEl) {
-          const text = (refEl.innerText || refEl.textContent || "").trim();
-          if (text) parts.push(text);
+          const text = cleanFieldTitle(refEl.innerText || refEl.textContent || "");
+          if (text && !isGenericBoilerplateLabel(text)) {
+            parts.push(text);
+          }
         }
       }
       if (parts.length > 0) {
-        return parts.join(" ");
+        const combined = cleanFieldTitle(parts.join(" "));
+        if (combined && !isGenericBoilerplateLabel(combined)) {
+          return combined;
+        }
       }
     }
   }
 
-  // 5. placeholder
-  if (el.getAttribute) {
-    const placeholder = el.getAttribute("placeholder");
-    if (placeholder && placeholder.trim()) {
-      return placeholder.trim();
+  // 5. Enclosing Question Container (Google Forms / modern web form structures)
+  // Handles: Google Forms (.Qr7Oae, .geS5n, [role="listitem"], [data-item-id])
+  // Resolves: .M7eMe, [role="heading"], .exportQuestionTitle, .freebirdFormviewerComponentsQuestionBaseTitle
+  if (el.closest) {
+    const questionContainer = el.closest(
+      "[role='listitem'], .Qr7Oae, .geS5n, [data-item-id], .freebirdFormviewerViewNumberedItemContainer, .freebirdFormviewerComponentsQuestionBaseRoot, .form-group, .field-group, .form-item, fieldset"
+    );
+    if (questionContainer) {
+      const heading = questionContainer.querySelector(
+        ".M7eMe, [role='heading'], .exportQuestionTitle, .freebirdFormviewerComponentsQuestionBaseTitle, .FmiOAc, .c2gGi, legend, label, .field-label, h1, h2, h3, h4, h5, strong, b"
+      );
+      if (heading && heading !== el) {
+        const headingText = cleanFieldTitle(heading.innerText || heading.textContent || "");
+        if (headingText && !isGenericBoilerplateLabel(headingText) && headingText.length < 100) {
+          return headingText;
+        }
+      }
     }
   }
 
-  // 6. name attribute (humanized)
+  // 6. Associated visible label text (aria-describedby)
+  if (el.getAttribute && typeof document !== "undefined" && document.getElementById) {
+    const describedBy = el.getAttribute("aria-describedby");
+    if (describedBy && describedBy.trim()) {
+      const ids = describedBy.trim().split(/\s+/);
+      const parts = [];
+      for (const id of ids) {
+        const refEl = document.getElementById(id);
+        if (refEl) {
+          const text = cleanFieldTitle(refEl.innerText || refEl.textContent || "");
+          if (text && !isGenericBoilerplateLabel(text) && text.length < 100) {
+            parts.push(text);
+          }
+        }
+      }
+      if (parts.length > 0) {
+        const combined = cleanFieldTitle(parts.join(" "));
+        if (combined && !isGenericBoilerplateLabel(combined)) {
+          return combined;
+        }
+      }
+    }
+  }
+
+  // 7. name attribute (humanized)
   if (el.getAttribute) {
     const nameAttr = el.getAttribute("name");
     if (nameAttr && nameAttr.trim()) {
       const humanized = humanizeName(nameAttr);
-      if (humanized) return humanized;
+      if (humanized && !isGenericBoilerplateLabel(humanized)) return humanized;
     }
   }
 
-  // 7. Nearby preceding visible text sibling or enclosing form-group / Google Forms container
-  // 7a. Check Google Forms role="listitem" question container
-  if (el.closest) {
-    const listitem = el.closest("[role='listitem']");
-    if (listitem) {
-      const heading = listitem.querySelector("[role='heading'], .freebirdFormviewerComponentsQuestionBaseTitle, .M7eMe");
-      if (heading) {
-        const headingText = (heading.innerText || heading.textContent || "").trim();
-        if (headingText) return headingText;
+  // 8. placeholder (non-boilerplate)
+  if (el.getAttribute) {
+    const placeholder = el.getAttribute("placeholder");
+    if (placeholder && placeholder.trim()) {
+      const cleaned = cleanFieldTitle(placeholder);
+      if (cleaned && !isGenericBoilerplateLabel(cleaned)) {
+        return cleaned;
       }
     }
   }
 
-  // 7b. Check preceding siblings in same parent
+  // 9. title attribute
+  if (el.getAttribute) {
+    const title = el.getAttribute("title");
+    if (title && title.trim()) {
+      const cleaned = cleanFieldTitle(title);
+      if (cleaned && !isGenericBoilerplateLabel(cleaned)) {
+        return cleaned;
+      }
+    }
+  }
+
+  // 10. Nearby preceding visible text sibling
   let prev = el.previousElementSibling;
   while (prev) {
-    const prevText = (prev.innerText || prev.textContent || "").trim();
-    if (prevText && prevText.length < 100) {
+    const prevText = cleanFieldTitle(prev.innerText || prev.textContent || "");
+    if (prevText && !isGenericBoilerplateLabel(prevText) && prevText.length < 100) {
       return prevText;
     }
     prev = prev.previousElementSibling;
   }
 
-  // 7c. Check enclosing form-group container
+  // 11. Enclosing form-group / container label fallback
   if (el.closest) {
-    const parentGroup = el.closest(".form-group, .field-group, .form-row, div, p");
+    const parentGroup = el.closest(".form-group, .field-group, .form-row, .input-group, div, p");
     if (parentGroup && (typeof document === "undefined" || parentGroup !== document.body)) {
       const labelLike = parentGroup.querySelector("label, .field-label, .label, span, strong, b");
       if (labelLike && labelLike !== el) {
-        const text = (labelLike.innerText || labelLike.textContent || "").trim();
-        if (text && text.length < 100) return text;
+        const text = cleanFieldTitle(labelLike.innerText || labelLike.textContent || "");
+        if (text && !isGenericBoilerplateLabel(text) && text.length < 100) return text;
       }
     }
   }
 
-  // 8. Fallback to existing "<type> field" behavior
+  // 12. Fallback to "<type> field"
   if (tagName === "input") {
     if (el.type === "password") {
       return "Password field";
     } else if (el.type === "email") {
       return "Email field";
+    } else if (el.type === "checkbox") {
+      return "Checkbox";
+    } else if (el.type === "radio") {
+      return "Radio button";
     } else {
       return el.type ? `${el.type} field` : "Input field";
     }
@@ -596,41 +747,82 @@ function classifyVisualElement(el, fieldId = null) {
 
   // 2. Identify UI element type
   const tagName = (el.tagName || "").toLowerCase();
+  const elRole = el.getAttribute ? (el.getAttribute("role") || "").toLowerCase() : "";
+  const isContentEditable = !!(el.isContentEditable || (el.getAttribute && el.getAttribute("contenteditable") === "true"));
   let type = "element";
 
   if (/^h[1-6]$/.test(tagName)) {
     type = "heading";
-  } else if (tagName === "button" || (el.getAttribute && el.getAttribute("role") === "button") || (tagName === "input" && ["button", "submit", "reset"].includes(el.type))) {
+  } else if (tagName === "button" || elRole === "button" || (tagName === "input" && ["button", "submit", "reset"].includes(el.type))) {
     type = "button";
-  } else if (tagName === "a") {
+  } else if (tagName === "a" || elRole === "link") {
     type = "link";
   } else if (tagName === "textarea") {
     type = "textarea";
-  } else if (tagName === "select") {
+  } else if (tagName === "select" || elRole === "combobox") {
     type = "select";
+  } else if (elRole === "textbox" || isContentEditable) {
+    type = (el.getAttribute && el.getAttribute("aria-multiline") === "true") || tagName === "textarea" ? "textarea" : "input";
   } else if (tagName === "input") {
-    if (el.type === "checkbox") {
+    if (el.type === "checkbox" || elRole === "checkbox") {
       type = "checkbox";
-    } else if (el.type === "radio") {
+    } else if (el.type === "radio" || elRole === "radio") {
       type = "radio";
     } else {
       type = "input";
     }
+  } else if (["checkbox", "radio", "tab", "menuitem", "switch"].includes(elRole)) {
+    type = elRole;
   }
 
   // 3. Safe, non-sensitive label extraction
-  // NOTE: Explicitly NEVER reads .value to ensure privacy preservation.
+  // NOTE: Explicitly NEVER reads .value from user-entered form controls to ensure privacy preservation.
   let label = "";
-  const isFormField = ["input", "textarea", "select"].includes(tagName);
+  const isFormField = ["input", "textarea", "select"].includes(tagName) || elRole === "textbox" || isContentEditable;
 
   if (isFormField) {
     label = extractFormFieldLabel(el, type);
   } else {
-    label = (el.innerText || el.textContent || (el.getAttribute ? el.getAttribute("aria-label") : "") || "").trim();
+    // Buttons, links, headings, interactive roles
+    if (el.getAttribute && el.getAttribute("aria-label")) {
+      label = el.getAttribute("aria-label").trim();
+    } else if (el.getAttribute && el.getAttribute("aria-labelledby") && typeof document !== "undefined" && document.getElementById) {
+      const ids = el.getAttribute("aria-labelledby").trim().split(/\s+/);
+      const parts = [];
+      for (const id of ids) {
+        const refEl = document.getElementById(id);
+        if (refEl) {
+          const t = (refEl.innerText || refEl.textContent || "").trim();
+          if (t) parts.push(t);
+        }
+      }
+      if (parts.length > 0) label = parts.join(" ");
+    }
+    if (!label) {
+      label = (el.innerText || el.textContent || "").trim();
+    }
+    if (!label && el.querySelector) {
+      const img = el.querySelector("img[alt]");
+      if (img && img.getAttribute("alt")) {
+        label = img.getAttribute("alt").trim();
+      }
+    }
+    if (!label && el.getAttribute && el.getAttribute("title")) {
+      label = el.getAttribute("title").trim();
+    }
+    if (!label && tagName === "input" && ["button", "submit", "reset"].includes(el.type) && el.value) {
+      label = String(el.value).trim();
+    }
   }
 
   // Normalize spacing and truncate label length
   label = label.replace(/\s+/g, " ").slice(0, 60) || `${type} element`;
+
+  const isDisabled = !!(
+    el.disabled ||
+    (el.getAttribute && el.getAttribute("aria-disabled") === "true") ||
+    (el.classList && el.classList.contains("disabled"))
+  );
 
   // 4. Record bounding box and metadata with safe semantic label
   const semanticTag = getSemanticTag(type, label, el);
@@ -638,6 +830,13 @@ function classifyVisualElement(el, fieldId = null) {
     type: type,
     label: label,
     semanticTag: semanticTag,
+    role: elRole || null,
+    disabled: isDisabled,
+    placeholder: (el.getAttribute ? el.getAttribute("placeholder") : null) || null,
+    ariaLabel: (el.getAttribute ? el.getAttribute("aria-label") : null) || null,
+    title: (el.getAttribute ? el.getAttribute("title") : null) || null,
+    inputType: tagName === "input" ? (el.type || "text") : null,
+    isInteractable: !isDisabled && ["button", "link", "input", "textarea", "select", "checkbox", "radio", "textbox"].includes(type),
     x: Math.round(rect.x),
     y: Math.round(rect.y),
     width: Math.round(rect.width),
@@ -665,7 +864,10 @@ function extractVisualElements() {
 
   elements.forEach((el) => {
     const tagName = (el.tagName || "").toLowerCase();
-    const isFormField = ["input", "textarea", "select"].includes(tagName);
+    const isFormField = ["input", "textarea", "select"].includes(tagName) ||
+      (el.getAttribute && el.getAttribute("role") === "textbox") ||
+      el.isContentEditable ||
+      (el.getAttribute && el.getAttribute("contenteditable") === "true");
     const fieldId = isFormField ? formFieldCounter++ : null;
     const item = classifyVisualElement(el, fieldId);
     if (item) {
@@ -689,7 +891,10 @@ function extractVisualElementsWithNodes() {
 
   elements.forEach((el) => {
     const tagName = (el.tagName || "").toLowerCase();
-    const isFormField = ["input", "textarea", "select"].includes(tagName);
+    const isFormField = ["input", "textarea", "select"].includes(tagName) ||
+      (el.getAttribute && el.getAttribute("role") === "textbox") ||
+      el.isContentEditable ||
+      (el.getAttribute && el.getAttribute("contenteditable") === "true");
     const fieldId = isFormField ? formFieldCounter++ : null;
     const item = classifyVisualElement(el, fieldId);
     if (item) {
@@ -757,50 +962,277 @@ function extractSensitiveRegions() {
   return sensitiveRegions;
 }
 
+let currentApprovalCallback = null;
+
+function removeInPageApprovalModal() {
+  const existing = document.getElementById("sih-agent-approval-overlay");
+  if (existing) {
+    existing.remove();
+  }
+  if (currentApprovalCallback) {
+    currentApprovalCallback = null;
+  }
+}
+
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function showInPageApprovalModal(actionDetails, callback) {
+  removeInPageApprovalModal();
+  currentApprovalCallback = callback;
+
+  const overlay = document.createElement("div");
+  overlay.id = "sih-agent-approval-overlay";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-labelledby", "sih-approval-title");
+
+  Object.assign(overlay.style, {
+    position: "fixed",
+    top: "0",
+    left: "0",
+    width: "100vw",
+    height: "100vh",
+    backgroundColor: "rgba(10, 15, 29, 0.75)",
+    backdropFilter: "blur(6px)",
+    WebkitBackdropFilter: "blur(6px)",
+    zIndex: "2147483647",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    color: "#ffffff",
+    padding: "20px",
+    boxSizing: "border-box"
+  });
+
+  const card = document.createElement("div");
+  card.id = "sih-agent-approval-card";
+  Object.assign(card.style, {
+    backgroundColor: "#111827",
+    border: "1px solid rgba(239, 68, 68, 0.4)",
+    borderRadius: "16px",
+    padding: "24px 28px",
+    maxWidth: "480px",
+    width: "100%",
+    boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.6), 0 0 30px rgba(239, 68, 68, 0.2)",
+    display: "flex",
+    flexDirection: "column",
+    gap: "16px"
+  });
+
+  const header = document.createElement("div");
+  header.style.display = "flex";
+  header.style.alignItems = "center";
+  header.style.justifyContent = "space-between";
+
+  const badge = document.createElement("div");
+  badge.textContent = "SAFETY GATE: APPROVAL REQUIRED";
+  Object.assign(badge.style, {
+    fontSize: "11px",
+    fontWeight: "700",
+    letterSpacing: "0.06em",
+    textTransform: "uppercase",
+    padding: "4px 10px",
+    borderRadius: "9999px",
+    backgroundColor: "rgba(239, 68, 68, 0.18)",
+    color: "#f87171",
+    border: "1px solid rgba(239, 68, 68, 0.4)"
+  });
+
+  const riskBadge = document.createElement("div");
+  riskBadge.textContent = actionDetails.risk || "HIGH RISK";
+  Object.assign(riskBadge.style, {
+    fontSize: "11px",
+    fontWeight: "700",
+    padding: "4px 10px",
+    borderRadius: "9999px",
+    backgroundColor: "#ef4444",
+    color: "#ffffff"
+  });
+
+  header.appendChild(badge);
+  header.appendChild(riskBadge);
+
+  const title = document.createElement("h2");
+  title.id = "sih-approval-title";
+  title.textContent = "Agent Ready for Consequential Action";
+  Object.assign(title.style, {
+    margin: "0",
+    fontSize: "18px",
+    fontWeight: "600",
+    color: "#f3f4f6"
+  });
+
+  const body = document.createElement("div");
+  Object.assign(body.style, {
+    backgroundColor: "rgba(31, 41, 55, 0.6)",
+    border: "1px solid rgba(75, 85, 99, 0.4)",
+    borderRadius: "10px",
+    padding: "14px 16px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "10px",
+    fontSize: "13px",
+    lineHeight: "1.5"
+  });
+
+  const actionRow = document.createElement("div");
+  actionRow.innerHTML = `<span style="color:#9ca3af;">Action: </span><strong style="color:#60a5fa;">${escapeHtml(actionDetails.action || "CLICK")} &rarr; ${escapeHtml(actionDetails.target || "Submit")}</strong>`;
+
+  const reasonRow = document.createElement("div");
+  reasonRow.innerHTML = `<span style="color:#9ca3af;">Reason: </span><span style="color:#e5e7eb;">${escapeHtml(actionDetails.reason || "This action will submit or modify state.")}</span>`;
+
+  const contextRow = document.createElement("div");
+  contextRow.innerHTML = `<span style="color:#9ca3af;">Page: </span><span style="color:#d1d5db;">${escapeHtml(document.title || window.location.hostname)}</span>`;
+
+  body.appendChild(actionRow);
+  body.appendChild(reasonRow);
+  body.appendChild(contextRow);
+
+  if (actionDetails.taskSummary) {
+    const taskRow = document.createElement("div");
+    taskRow.innerHTML = `<span style="color:#9ca3af;">Task: </span><span style="color:#d1d5db;">${escapeHtml(actionDetails.taskSummary)}</span>`;
+    body.appendChild(taskRow);
+  }
+
+  const notice = document.createElement("p");
+  notice.textContent = "This action will not execute automatically. Explicit human confirmation is required.";
+  Object.assign(notice.style, {
+    margin: "0",
+    fontSize: "12px",
+    color: "#9ca3af"
+  });
+
+  const btnContainer = document.createElement("div");
+  Object.assign(btnContainer.style, {
+    display: "flex",
+    gap: "12px",
+    marginTop: "8px"
+  });
+
+  const btnApprove = document.createElement("button");
+  btnApprove.id = "sih-btn-approve";
+  btnApprove.textContent = "Approve & Continue";
+  Object.assign(btnApprove.style, {
+    flex: "1",
+    backgroundColor: "#10b981",
+    color: "#ffffff",
+    border: "none",
+    borderRadius: "8px",
+    padding: "10px 16px",
+    fontSize: "14px",
+    fontWeight: "600",
+    cursor: "pointer",
+    transition: "background-color 0.15s ease"
+  });
+  btnApprove.onmouseenter = () => { btnApprove.style.backgroundColor = "#059669"; };
+  btnApprove.onmouseleave = () => { btnApprove.style.backgroundColor = "#10b981"; };
+
+  const btnCancel = document.createElement("button");
+  btnCancel.id = "sih-btn-cancel";
+  btnCancel.textContent = "Cancel Execution";
+  Object.assign(btnCancel.style, {
+    flex: "1",
+    backgroundColor: "#374151",
+    color: "#e5e7eb",
+    border: "1px solid #4b5563",
+    borderRadius: "8px",
+    padding: "10px 16px",
+    fontSize: "14px",
+    fontWeight: "600",
+    cursor: "pointer",
+    transition: "background-color 0.15s ease"
+  });
+  btnCancel.onmouseenter = () => { btnCancel.style.backgroundColor = "#4b5563"; };
+  btnCancel.onmouseleave = () => { btnCancel.style.backgroundColor = "#374151"; };
+
+  btnApprove.addEventListener("click", () => {
+    removeInPageApprovalModal();
+    if (callback) callback({ approved: true });
+  });
+
+  btnCancel.addEventListener("click", () => {
+    removeInPageApprovalModal();
+    if (callback) callback({ approved: false, cancelled: true });
+  });
+
+  btnContainer.appendChild(btnCancel);
+  btnContainer.appendChild(btnApprove);
+
+  card.appendChild(header);
+  card.appendChild(title);
+  card.appendChild(body);
+  card.appendChild(notice);
+  card.appendChild(btnContainer);
+
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+}
+
 // Listen for messages sent from the popup
 if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === "getPageInfo") {
-    // 1. Collect basic page metadata (Milestone 1)
-    const title = document.title || "No Title Found";
-    const url = window.location.href;
+    if (request.action === "getPageInfo") {
+      // 1. Collect basic page metadata (Milestone 1)
+      const title = document.title || "No Title Found";
+      const url = window.location.href;
 
-    // 2. Extract a small snippet of visible text (capped at 2000 characters)
-    const rawVisibleText = document.body ? document.body.innerText.slice(0, 2000) : "";
+      // 2. Extract a small snippet of visible text (capped at 2000 characters)
+      const rawVisibleText = document.body ? document.body.innerText.slice(0, 2000) : "";
 
-    // 3. Redact any sensitive PII locally before sending back (Milestone 2)
-    const redactedSample = typeof redactText === "function" 
-      ? redactText(rawVisibleText) 
-      : rawVisibleText;
+      // 3. Redact any sensitive PII locally before sending back (Milestone 2)
+      const redactedSample = typeof redactText === "function" 
+        ? redactText(rawVisibleText) 
+        : rawVisibleText;
 
-    // 4. Local visual context perception: extract visible UI elements (Milestone 8)
-    const visualElements = extractVisualElements();
+      // 4. Local visual context perception: extract visible UI elements (Milestone 8)
+      const visualElements = extractVisualElements();
 
-    // 5. Local visual privacy: extract sensitive regions (Milestone 11)
-    const tSensStart = performance.now();
-    const sensitiveRegions = extractSensitiveRegions();
-    const sensitiveDetectionMs = Math.round(performance.now() - tSensStart);
+      // 5. Local visual privacy: extract sensitive regions (Milestone 11)
+      const tSensStart = performance.now();
+      const sensitiveRegions = extractSensitiveRegions();
+      const sensitiveDetectionMs = Math.round(performance.now() - tSensStart);
 
-    // 6. Send the sanitized data back to popup (never expose raw text, passwords, or input values)
-    sendResponse({
-      success: true,
-      title,
-      url,
-      redactedSample,
-      visualElements,
-      sensitiveRegions,
-      sensitiveDetectionMs
-    });
-  } else if (request.action === "executeAction") {
-    // Milestones 5 & 6: Safely execute whitelisted action
-    const executionResult = executeAction(request.payload);
-    sendResponse({
-      success: true,
-      result: executionResult
-    });
-  }
+      // 6. Send the sanitized data back to popup (never expose raw text, passwords, or input values)
+      sendResponse({
+        success: true,
+        title,
+        url,
+        redactedSample,
+        visualElements,
+        sensitiveRegions,
+        sensitiveDetectionMs
+      });
+      return false;
+    } else if (request.action === "executeAction") {
+      // Milestones 5 & 6: Safely execute whitelisted action
+      const executionResult = executeAction(request.payload);
+      sendResponse({
+        success: true,
+        result: executionResult
+      });
+      return false;
+    } else if (request.action === "requestHumanApproval") {
+      // Safe human-in-the-loop approval modal
+      showInPageApprovalModal(request.payload || {}, (response) => {
+        sendResponse(response);
+      });
+      return true; // Keep message channel open for async user response
+    } else if (request.action === "dismissHumanApproval") {
+      removeInPageApprovalModal();
+      sendResponse({ dismissed: true });
+      return false;
+    }
 
-  return false;
+    return false;
   });
 }
 
@@ -816,6 +1248,8 @@ if (typeof module !== "undefined" && module.exports) {
     humanizeName,
     executeAction,
     normalizeLabel,
-    labelsMatch
+    labelsMatch,
+    showInPageApprovalModal,
+    removeInPageApprovalModal
   };
 }

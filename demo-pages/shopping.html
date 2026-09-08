@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Electronics Store - SIH26171 Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #f1f5f9;
+      color: #0f172a;
+      padding: 30px 20px;
+    }
+    .header {
+      max-width: 960px;
+      margin: 0 auto 24px auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #ffffff;
+      padding: 16px 24px;
+      border-radius: 10px;
+      border: 1px solid #e2e8f0;
+    }
+    .logo { font-size: 18px; font-weight: 700; color: #1e293b; }
+    .cart-pill {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      color: #1d4ed8;
+      padding: 6px 14px;
+      border-radius: 9999px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .products-grid {
+      max-width: 960px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 20px;
+    }
+    .product-card {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.03);
+    }
+    .product-icon {
+      height: 70px;
+      background: #f8fafc;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 32px;
+      margin-bottom: 14px;
+    }
+    .product-title { font-size: 16px; font-weight: 700; margin-bottom: 6px; color: #1e293b; }
+    .product-desc { font-size: 12px; color: #64748b; margin-bottom: 14px; line-height: 1.4; }
+    .product-price { font-size: 15px; font-weight: 700; color: #059669; margin-bottom: 14px; }
+    .actions { display: flex; gap: 8px; }
+    .btn-add-cart {
+      flex: 1;
+      background: #0284c7;
+      color: #ffffff;
+      border: none;
+      padding: 9px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .btn-add-cart:hover { background: #0369a1; }
+    .btn-details {
+      background: #f1f5f9;
+      color: #334155;
+      border: 1px solid #cbd5e1;
+      padding: 9px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .btn-details:hover { background: #e2e8f0; }
+    #notification {
+      max-width: 960px;
+      margin: 16px auto 0 auto;
+      padding: 10px 16px;
+      border-radius: 8px;
+      background: #ecfdf5;
+      color: #065f46;
+      border: 1px solid #a7f3d0;
+      font-size: 13px;
+      font-weight: 600;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">ByteShop Devices</div>
+    <div class="cart-pill" id="cartIndicator">Cart: <span id="cartCount">0</span> items</div>
+  </div>
+
+  <div class="products-grid">
+    <!-- Laptop -->
+    <div class="product-card" id="card-laptop">
+      <div>
+        <div class="product-icon">&#128187;</div>
+        <div class="product-title">UltraBook Pro Laptop</div>
+        <div class="product-desc">16-inch display, 32GB RAM, 1TB SSD, 14-hour battery life for developers.</div>
+        <div class="product-price">$1,299.00</div>
+      </div>
+      <div class="actions">
+        <button class="btn-add-cart" id="btn-cart-laptop" onclick="addToCart('UltraBook Pro Laptop')">Add to Cart</button>
+        <button class="btn-details" id="btn-details-laptop" onclick="viewDetails('UltraBook Pro Laptop')">View Details</button>
+      </div>
+    </div>
+
+    <!-- Headphones -->
+    <div class="product-card" id="card-headphones">
+      <div>
+        <div class="product-icon">&#127911;</div>
+        <div class="product-title">Wireless Studio Headphones</div>
+        <div class="product-desc">Active noise cancellation, spatial audio, and 40-hour ultra battery life.</div>
+        <div class="product-price">$249.00</div>
+      </div>
+      <div class="actions">
+        <button class="btn-add-cart" id="btn-cart-headphones" onclick="addToCart('Wireless Studio Headphones')">Add to Cart</button>
+        <button class="btn-details" id="btn-details-headphones" onclick="viewDetails('Wireless Studio Headphones')">View Details</button>
+      </div>
+    </div>
+
+    <!-- Keyboard -->
+    <div class="product-card" id="card-keyboard">
+      <div>
+        <div class="product-icon">&#9000;</div>
+        <div class="product-title">Mechanical RGB Keyboard</div>
+        <div class="product-desc">Hot-swappable tactile switches, double-shot PBT keycaps, aluminum frame.</div>
+        <div class="product-price">$119.00</div>
+      </div>
+      <div class="actions">
+        <button class="btn-add-cart" id="btn-cart-keyboard" onclick="addToCart('Mechanical RGB Keyboard')">Add to Cart</button>
+        <button class="btn-details" id="btn-details-keyboard" onclick="viewDetails('Mechanical RGB Keyboard')">View Details</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="notification"></div>
+
+  <script>
+    let count = 0;
+    function addToCart(item) {
+      count++;
+      document.getElementById("cartCount").textContent = count;
+      const notif = document.getElementById("notification");
+      notif.textContent = `Added "${item}" to cart! (Total: ${count})`;
+      notif.style.display = "block";
+    }
+    function viewDetails(item) {
+      const notif = document.getElementById("notification");
+      notif.textContent = `Viewing details for: ${item}`;
+      notif.style.display = "block";
+    }
+  </script>
+</body>
+</html>

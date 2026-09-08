@@ -56,7 +56,8 @@
         "lib/ocr/tesseract-core.wasm.js",
         "lib/ocr/tesseract-core.wasm",
         "lib/ocr/*",
-        "change-detector.js"
+        "change-detector.js",
+        "reasoning-planner.js"
       ],
       "matches": ["<all_urls>"]
     }

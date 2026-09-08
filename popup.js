@@ -92,8 +92,31 @@ document.addEventListener("DOMContentLoaded", () => {
   const fillStepStatus = document.getElementById("fillStepStatus");
   const fieldValuesPrivacyNotice = document.getElementById("fieldValuesPrivacyNotice");
 
-  // Milestone 14 & 16 Constants (Bounded Loop up to 5 steps)
-  const MAX_AGENT_STEPS = 5;
+  // Final Architecture: Local Reasoning & Safety Planner DOM Elements
+  const plannerTaskUnderstanding = document.getElementById("plannerTaskUnderstanding");
+  const plannerExecutionPlan = document.getElementById("plannerExecutionPlan");
+  const plannerReasoningTrace = document.getElementById("plannerReasoningTrace");
+  const plannerRiskBadge = document.getElementById("plannerRiskBadge");
+  const plannerSafetyDecision = document.getElementById("plannerSafetyDecision");
+  const plannerApprovalStatus = document.getElementById("plannerApprovalStatus");
+  const popupApprovalContainer = document.getElementById("popupApprovalContainer");
+  const popupApprovalAction = document.getElementById("popupApprovalAction");
+  const popupApprovalReason = document.getElementById("popupApprovalReason");
+  const popupBtnApprove = document.getElementById("popupBtnApprove");
+  const popupBtnCancel = document.getElementById("popupBtnCancel");
+
+  function escapeHtml(str) {
+    if (!str) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  // Milestone 14 & 16 Constants (Bounded Loop with safe ceiling)
+  const MAX_AGENT_STEPS = 10;
   const PIXEL_CHANGE_THRESHOLD = 30;
   const ACTION_VERIFICATION_DELAY_MS = 600;
 
@@ -431,9 +454,11 @@ document.addEventListener("DOMContentLoaded", () => {
       if (visionLatency) visionLatency.textContent = `${latencyMs} ms`;
       if (visionClassIndex) visionClassIndex.textContent = result.classIndex;
       if (visionConfidence) {
-        visionConfidence.textContent = typeof result.confidence === "number"
-          ? result.confidence.toFixed(4)
-          : result.confidence;
+        let confVal = typeof result.confidence === "number" ? result.confidence : parseFloat(result.confidence);
+        if (isNaN(confVal)) confVal = 0.0;
+        confVal = Math.max(0.0, Math.min(1.0, confVal));
+        const pctStr = (confVal * 100).toFixed(1) + "%";
+        visionConfidence.textContent = `${pctStr} (${confVal.toFixed(4)})`;
       }
       if (visionDetails) visionDetails.style.display = "block";
     } catch (err) {
@@ -720,43 +745,20 @@ document.addEventListener("DOMContentLoaded", () => {
           if (decisionOutput) decisionOutput.value = actionStr;
           if (agentActionText) agentActionText.textContent = actionStr;
           if (agentReasoningText) {
-            agentReasoningText.textContent = `Visual context unavailable — decision based on sanitized text only (${reasonNotice || "Fallback"}).`;
+            agentReasoningText.textContent = `Visual context unavailable — decision based on sanitized text only (${reasonNotice || "Fallback"}). Observation only: no action executed.`;
           }
 
-          if (executionOutput) executionOutput.value = "Executing action via local allowlist...";
-          chrome.tabs.sendMessage(
-            tab.id,
-            { action: "executeAction", payload: resJson.action },
-            (execRes) => {
-              if (chrome.runtime.lastError) {
-                if (executionOutput) executionOutput.value = `Execution error: ${chrome.runtime.lastError.message}`;
-                if (agentSafetyStatus) agentSafetyStatus.textContent = `Error: ${chrome.runtime.lastError.message}`;
-                if (agentExecutionStatus) agentExecutionStatus.textContent = executionOutput.value;
-              } else if (execRes && execRes.result) {
-                const r = execRes.result;
-                if (r.executed) {
-                  const execStr = (r.amount !== undefined && r.amount !== null)
-                    ? `Executed: ${r.action} → ${r.target} (amount: ${r.amount})`
-                    : `Executed: ${r.action} → ${r.target}`;
-                  if (executionOutput) executionOutput.value = execStr;
-                  if (agentSafetyStatus) agentSafetyStatus.textContent = "PASSED (Local Allowlist Verified)";
-                  if (agentExecutionStatus) agentExecutionStatus.textContent = execStr;
-                } else {
-                  if (executionOutput) executionOutput.value = `Not executed: ${r.reason}`;
-                  if (agentSafetyStatus) agentSafetyStatus.textContent = `REJECTED: ${r.reason}`;
-                  if (agentExecutionStatus) agentExecutionStatus.textContent = executionOutput.value;
-                }
-              } else {
-                if (executionOutput) executionOutput.value = "No execution response received";
-                if (agentExecutionStatus) agentExecutionStatus.textContent = "No execution response received";
-              }
-            }
-          );
+          // SECURITY INVARIANT (Milestone 17 Production Hardening): OBSERVATION ≠ ACTION
+          // Capture Page Info and text-only observation requests MUST NEVER automatically execute actions.
+          if (executionOutput) executionOutput.value = "Observation only: Action execution withheld (Observation ≠ Action policy enforced).";
+          if (agentSafetyStatus) agentSafetyStatus.textContent = "OBSERVATION ONLY (Actions disabled in Capture/Fallback mode)";
+          if (agentExecutionStatus) agentExecutionStatus.textContent = "Observation Only (No browser action executed)";
         } else {
           if (decisionOutput) decisionOutput.value = "No action returned";
-          if (executionOutput) executionOutput.value = "Not executed: No action payload";
+          if (executionOutput) executionOutput.value = "Observation only: No action payload";
           if (agentActionText) agentActionText.textContent = "No action returned";
-          if (agentExecutionStatus) agentExecutionStatus.textContent = "Not executed";
+          if (agentSafetyStatus) agentSafetyStatus.textContent = "OBSERVATION ONLY";
+          if (agentExecutionStatus) agentExecutionStatus.textContent = "Observation Only";
         }
       } else {
         if (backendOutput) backendOutput.value = `Backend Error: HTTP ${apiRes.status} ${apiRes.statusText}`;
@@ -787,8 +789,10 @@ document.addEventListener("DOMContentLoaded", () => {
           throw new Error("No active tab found");
         }
 
-        if (tab.url && (tab.url.startsWith("chrome://") || tab.url.startsWith("edge://") || tab.url.startsWith("about:"))) {
-          throw new Error("Cannot capture Chrome/browser system pages");
+        if (tab.url && (tab.url.startsWith("chrome://") || tab.url.startsWith("edge://") || tab.url.startsWith("about:") || tab.url.startsWith("chrome-extension://") || tab.url.startsWith("view-source:"))) {
+          const restrictedErr = new Error("This page is restricted by the browser.");
+          restrictedErr.isRestrictedPage = true;
+          throw restrictedErr;
         }
 
         // 1. Trigger local screenshot capture (M7, M9, M12)
@@ -903,12 +907,84 @@ document.addEventListener("DOMContentLoaded", () => {
   // =====================================================================
   if (runAgentTaskBtn) {
     runAgentTaskBtn.addEventListener("click", async () => {
+      console.log("[SIH26171] Run Agent Task clicked");
       const task = (taskInput ? taskInput.value : "").trim() || "Find the Submit button and click it.";
 
-      // Milestone 16: Local deterministic NL task parser (client-side only; values never transmitted)
-      let parsedTask = null;
-      if (window.SIHTaskParser && typeof window.SIHTaskParser.parseTask === "function") {
-        parsedTask = window.SIHTaskParser.parseTask(task);
+      // Update Browser Agent Status immediately upon click so user sees active state
+      if (agentTaskText) agentTaskText.textContent = task;
+      if (agentExecutionStatus) agentExecutionStatus.textContent = "Starting...";
+      if (agentSafetyStatus) agentSafetyStatus.textContent = "Analyzing...";
+
+      let currentStep = 1;
+      let currentRequestId = "-";
+
+      try {
+        // Milestone 16: Local deterministic NL task parser (client-side only; values never transmitted)
+        let parsedTask = null;
+        if (window.SIHTaskParser && typeof window.SIHTaskParser.parseTask === "function") {
+          parsedTask = window.SIHTaskParser.parseTask(task);
+        }
+        console.log("[SIH26171] Task parsed");
+
+        // Final Architecture: On-Device Reasoning & Safety Planner (Deterministic, Local, Auditable)
+        let reasoningPlan = null;
+        if (window.SIHReasoningPlanner && typeof window.SIHReasoningPlanner.planTask === "function") {
+          reasoningPlan = window.SIHReasoningPlanner.planTask(parsedTask, {
+            title: document.title,
+            url: window.location.href
+          });
+        }
+        console.log("[SIH26171] Reasoning plan created");
+
+      // Render transparent task understanding and structured plan in UI
+      if (plannerTaskUnderstanding) {
+        plannerTaskUnderstanding.textContent = reasoningPlan ? reasoningPlan.taskUnderstanding : task;
+      }
+      if (plannerExecutionPlan) {
+        if (reasoningPlan && reasoningPlan.steps && reasoningPlan.steps.length > 0) {
+          plannerExecutionPlan.innerHTML = reasoningPlan.steps.map((st, i) => {
+            const riskColor = (st.risk === "HIGH" || st.risk === "CRITICAL") ? "#dc2626" : ((st.risk === "MEDIUM") ? "#d97706" : "#2563eb");
+            const approvalBadge = st.requiresApproval
+              ? `<span style="background:#fee2e2;color:#dc2626;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:bold;margin-left:4px;">APPROVAL REQ</span>`
+              : `<span style="background:#f3f4f6;color:#4b5563;padding:1px 5px;border-radius:3px;font-size:9px;margin-left:4px;">AUTO</span>`;
+            return `<div style="padding:2px 0;"><strong>${i + 1}.</strong> ${escapeHtml(st.type)} &rarr; <strong>${escapeHtml(st.target || st.fieldHint || "target")}</strong> <span style="color:${riskColor};font-weight:bold;font-size:10px;">[${st.risk}]</span>${approvalBadge}</div>`;
+          }).join("");
+        } else {
+          plannerExecutionPlan.innerHTML = "<div>1. Generic Action &rarr; [LOW] (Auto)</div>";
+        }
+      }
+
+      let plannerTraceList = (reasoningPlan && Array.isArray(reasoningPlan.reasoningTrace))
+        ? [...reasoningPlan.reasoningTrace]
+        : [];
+      const appendPlannerTrace = (msg) => {
+        if (!msg) return;
+        plannerTraceList.push(msg);
+        if (plannerReasoningTrace) {
+          plannerReasoningTrace.innerHTML = plannerTraceList.map((m) => `<div>&bull; ${escapeHtml(m)}</div>`).join("");
+          plannerReasoningTrace.scrollTop = plannerReasoningTrace.scrollHeight;
+        }
+      };
+      if (plannerReasoningTrace) {
+        plannerReasoningTrace.innerHTML = plannerTraceList.length > 0
+          ? plannerTraceList.map((m) => `<div>&bull; ${escapeHtml(m)}</div>`).join("")
+          : "<div>&bull; Task parsed and planned locally.</div>";
+      }
+      if (plannerRiskBadge) {
+        plannerRiskBadge.textContent = "LOW";
+        plannerRiskBadge.style.background = "#e0e7ff";
+        plannerRiskBadge.style.color = "#3730a3";
+      }
+      if (plannerSafetyDecision) {
+        plannerSafetyDecision.textContent = "PASSED (Safe Action)";
+        plannerSafetyDecision.style.color = "#166534";
+      }
+      if (plannerApprovalStatus) {
+        plannerApprovalStatus.textContent = "NOT REQUIRED";
+        plannerApprovalStatus.style.color = "#1e1b4b";
+      }
+      if (popupApprovalContainer) {
+        popupApprovalContainer.style.display = "none";
       }
 
       const isPlannedTask = parsedTask && parsedTask.intent !== "NONE" && Array.isArray(parsedTask.steps) && parsedTask.steps.length > 0;
@@ -916,29 +992,45 @@ document.addEventListener("DOMContentLoaded", () => {
       const totalPlannedSteps = isPlannedTask ? Math.min(plannedSteps.length, MAX_AGENT_STEPS) : 1;
       const localValuesMap = (isPlannedTask && parsedTask.localValues) ? parsedTask.localValues : {};
 
-      // Reset state for new agent task execution
-      previousScreenSignature = null;
-      executionTraceHistory = [];
-      renderTraceHistory();
+        // AGENT SESSION ISOLATION (Milestone 17 Production Hardening):
+        // A new task execution must NEVER inherit approval state, stale actions, or prior plan state.
+        previousScreenSignature = null;
+        executionTraceHistory = [];
+        let lastActionKey = null;
+        renderTraceHistory();
 
-      if (fillStepStatus) {
-        fillStepStatus.textContent = isPlannedTask && (parsedTask.intent.includes("FILL") || parsedTask.steps.some((s) => s.type === "FILL")) ? "Planning steps..." : "-";
-      }
-      if (fieldValuesPrivacyNotice) {
-        fieldValuesPrivacyNotice.textContent = "Kept local (not sent)";
-      }
+        if (popupApprovalContainer) {
+          popupApprovalContainer.style.display = "none";
+        }
 
-      let currentStep = 1;
-      let lastActionKey = null;
+        // Ensure any lingering in-page approval modal is dismissed
+        try {
+          chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs && tabs[0] && tabs[0].id) {
+              chrome.tabs.sendMessage(tabs[0].id, { action: "dismissHumanApproval" }, () => {
+                if (chrome.runtime.lastError) {}
+              });
+            }
+          });
+        } catch (e) {}
 
-      while (currentStep <= MAX_AGENT_STEPS) {
-        const requestId = "SIH-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-        resetPipelineState();
+        if (fillStepStatus) {
+          fillStepStatus.textContent = isPlannedTask && (parsedTask.intent.includes("FILL") || parsedTask.steps.some((s) => s.type === "FILL")) ? "Planning steps..." : "-";
+        }
+        if (fieldValuesPrivacyNotice) {
+          fieldValuesPrivacyNotice.textContent = "Kept local (not sent)";
+        }
+
+        while (currentStep <= (isPlannedTask ? totalPlannedSteps : MAX_AGENT_STEPS)) {
+          const requestId = "SIH-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+          currentRequestId = requestId;
+          resetPipelineState();
 
         // Update step & verification indicators
         if (agentStepText) {
-          const maxStepsToShow = isPlannedTask ? totalPlannedSteps : MAX_AGENT_STEPS;
-          agentStepText.textContent = `Step ${currentStep} of up to ${maxStepsToShow}`;
+          agentStepText.textContent = isPlannedTask
+            ? `Step ${currentStep} of ${totalPlannedSteps}`
+            : `Step ${currentStep} of up to ${MAX_AGENT_STEPS}`;
         }
         if (agentVerificationText) {
           agentVerificationText.textContent = currentStep === 1
@@ -977,8 +1069,35 @@ document.addEventListener("DOMContentLoaded", () => {
         let pipelineOutput = null;
         try {
           // Step 1: Run local observation pipeline (reused once per cycle)
+          console.log("[SIH26171] Perception pipeline started");
           pipelineOutput = await runLocalPipeline();
+          console.log("[SIH26171] Perception pipeline completed");
         } catch (pipelineErr) {
+          if (pipelineErr.isRestrictedPage) {
+            if (agentSafetyStatus) agentSafetyStatus.textContent = "Browser Restricted Page";
+            if (agentExecutionStatus) agentExecutionStatus.textContent = "This page is restricted by the browser.";
+            if (agentReasoningText) agentReasoningText.textContent = "This page is restricted by the browser. Browser extensions cannot run on internal browser pages (chrome://, edge://, about:). Please navigate to an ordinary website or http://127.0.0.1:8000/test-page.html.";
+            if (agentStepText) agentStepText.textContent = "Halted (Restricted Page)";
+            if (agentVerificationText) {
+              agentVerificationText.textContent = "Browser internal page policy enforced.";
+              agentVerificationText.style.color = "#e65100";
+            }
+            if (agentSanitizedUploadStatus) {
+              agentSanitizedUploadStatus.textContent = "N/A (Restricted Page)";
+              agentSanitizedUploadStatus.style.color = "#777";
+            }
+            executionTraceHistory.push({
+              step: currentStep,
+              requestId,
+              action: null,
+              executed: false,
+              status: "restricted",
+              executionResult: "This page is restricted by the browser.",
+              verification: "Browser internal page policy"
+            });
+            renderTraceHistory();
+            break;
+          }
           console.error("Observation pipeline error:", pipelineErr);
           if (agentReasoningText) agentReasoningText.textContent = `Pipeline Error: ${pipelineErr.message}`;
           if (agentSanitizedUploadStatus) {
@@ -1075,16 +1194,28 @@ document.addEventListener("DOMContentLoaded", () => {
           : null;
 
         let taskToSend = task;
+        let stepFieldPlan = [];
         if (currentStepPlan) {
           if (currentStepPlan.type === "FILL") {
             taskToSend = `Fill ${currentStepPlan.fieldHint}`;
+            stepFieldPlan = [{
+              type: "FILL",
+              fieldHint: currentStepPlan.fieldHint,
+              stepId: currentStep - 1
+            }];
           } else if (currentStepPlan.type === "CLICK") {
             taskToSend = currentStepPlan.legacyTarget
               ? currentStepPlan.legacyTarget
               : `Click ${currentStepPlan.targetHint}`;
+            stepFieldPlan = [];
           } else if (currentStepPlan.type === "SCROLL") {
-            taskToSend = "Scroll down";
+            taskToSend = currentStepPlan.amount
+              ? `Scroll down ${currentStepPlan.amount} pixels`
+              : "Scroll down";
+            stepFieldPlan = [];
           }
+        } else if (isPlannedTask) {
+          stepFieldPlan = parsedTask.sanitizedPlan.filter((s) => s.type === "FILL");
         }
 
         const structuredContext = {
@@ -1102,9 +1233,7 @@ document.addEventListener("DOMContentLoaded", () => {
             width: el.width,
             height: el.height
           })),
-          fieldPlan: isPlannedTask
-            ? parsedTask.sanitizedPlan.filter((s) => s.type === "FILL")
-            : [],
+          fieldPlan: stepFieldPlan,
           sceneClassification: latestVisionResult ? {
             classIndex: latestVisionResult.classIndex,
             confidence: latestVisionResult.confidence
@@ -1125,6 +1254,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // Step 6: Send ONLY sanitized screenshot + structured data to Visual Gateway
         let gatewayResult = null;
         try {
+          console.log("[SIH26171] Gateway request started");
           gatewayResult = await sendToVisualGateway(
             sanitizedBlob,
             taskToSend,
@@ -1132,6 +1262,7 @@ document.addEventListener("DOMContentLoaded", () => {
             privacyMetadata,
             requestId
           );
+          console.log("[SIH26171] Gateway response received");
         } catch (gwErr) {
           console.warn("Visual gateway upload error, falling back to text-only pipeline:", gwErr);
           if (agentSanitizedUploadStatus) {
@@ -1169,36 +1300,110 @@ document.addEventListener("DOMContentLoaded", () => {
 
         let agentAction = data.action;
 
-        // Local grounding fallback for FILL steps if backend proposed NONE or no targetIndex
-        if (currentStepPlan && currentStepPlan.type === "FILL" && (!agentAction || agentAction.action === "NONE" || agentAction.targetIndex === undefined)) {
-          const FORM_TYPES = new Set(["input", "textarea", "select"]);
-          const normalize = (s) => (s || "").trim().toLowerCase();
-          const targetHintNorm = normalize(currentStepPlan.fieldHint);
+        // FIX #2: STRICT STEP COMPATIBILITY & EXPLICIT TASK AUTHORITY
+        // When a parsed task contains a current planned step, the returned agent action
+        // MUST be compatible with that step. Incompatible actions from backend or page-text fallbacks
+        // are discarded and replaced with local grounding for the planned step.
+        if (currentStepPlan) {
+          const plannedType = (currentStepPlan.type || "").toUpperCase();
 
-          let bestIdx = -1;
-          let bestScore = 0;
-          (latestVisualElements || []).forEach((el, idx) => {
-            if (!FORM_TYPES.has((el.type || "").toLowerCase())) return;
-            const labelNorm = normalize(el.label);
-            let score = 0;
-            if (labelNorm === targetHintNorm) score = 1.0;
-            else if (labelNorm.includes(targetHintNorm) || targetHintNorm.includes(labelNorm)) score = 0.8;
-            if (score > bestScore) {
-              bestScore = score;
-              bestIdx = idx;
+          if (plannedType === "FILL") {
+            const isCompatibleFill = agentAction && agentAction.action === "FILL" && agentAction.targetIndex !== undefined;
+            if (!isCompatibleFill) {
+              const FORM_TYPES = new Set(["input", "textarea", "select"]);
+              const normalize = (s) => (s || "").trim().toLowerCase();
+              const targetHintNorm = normalize(currentStepPlan.fieldHint);
+
+              let bestIdx = -1;
+              let bestScore = 0;
+              (latestVisualElements || []).forEach((el, idx) => {
+                if (!FORM_TYPES.has((el.type || "").toLowerCase())) return;
+                const labelNorm = normalize(el.label);
+                let score = 0;
+                if (labelNorm === targetHintNorm) score = 1.0;
+                else if (labelNorm.includes(targetHintNorm) || targetHintNorm.includes(labelNorm)) score = 0.8;
+                if (score > bestScore) {
+                  bestScore = score;
+                  bestIdx = idx;
+                }
+              });
+
+              if (bestIdx >= 0 && bestScore >= 0.35) {
+                const matchedEl = latestVisualElements[bestIdx];
+                agentAction = {
+                  action: "FILL",
+                  targetIndex: bestIdx,
+                  targetType: matchedEl.type,
+                  targetLabel: matchedEl.label,
+                  groundingScore: bestScore,
+                  groundingMethod: "local-fuzzy-match"
+                };
+              } else {
+                agentAction = {
+                  action: "NONE",
+                  target: null,
+                  reason: `Could not safely ground form field '${currentStepPlan.fieldHint}' on DOM.`
+                };
+              }
             }
-          });
+          } else if (plannedType === "CLICK") {
+            const isCompatibleClick = agentAction && agentAction.action === "CLICK";
+            if (!isCompatibleClick || agentAction.targetIndex === undefined) {
+              const normalize = (s) => (s || "").trim().toLowerCase();
+              const targetHintNorm = normalize(currentStepPlan.targetHint || currentStepPlan.legacyTarget || agentAction?.target || "").replace(/_button|_input/, "");
 
-          if (bestIdx >= 0 && bestScore >= 0.35) {
-            const matchedEl = latestVisualElements[bestIdx];
-            agentAction = {
-              action: "FILL",
-              targetIndex: bestIdx,
-              targetType: matchedEl.type,
-              targetLabel: matchedEl.label,
-              groundingScore: bestScore,
-              groundingMethod: "local-fuzzy-match"
-            };
+              let bestIdx = -1;
+              let bestScore = 0;
+              (latestVisualElements || []).forEach((el, idx) => {
+                if (el.disabled || String(el["aria-disabled"]).toLowerCase() === "true") return;
+                const elType = (el.type || "").toLowerCase();
+                if (!["button", "link", "input", "element"].includes(elType)) return;
+                const labelNorm = normalize(el.label);
+                let score = 0;
+                if (labelNorm === targetHintNorm) score = 1.0;
+                else if (labelNorm.includes(targetHintNorm) || (targetHintNorm && targetHintNorm.includes(labelNorm))) score = 0.8;
+                else if (targetHintNorm === "submit" && (labelNorm.includes("submit") || labelNorm.includes("send") || el.semanticTag === "SUBMIT_BUTTON")) score = 0.9;
+                if (score > bestScore) {
+                  bestScore = score;
+                  bestIdx = idx;
+                }
+              });
+
+              if (bestIdx >= 0 && bestScore >= 0.35) {
+                const matchedEl = latestVisualElements[bestIdx];
+                agentAction = {
+                  action: "CLICK",
+                  target: matchedEl.label,
+                  targetIndex: bestIdx,
+                  targetType: matchedEl.type,
+                  targetLabel: matchedEl.label,
+                  groundingScore: bestScore,
+                  groundingMethod: "local-fuzzy-match"
+                };
+              } else if (!isCompatibleClick) {
+                if (currentStepPlan.legacyTarget) {
+                  agentAction = {
+                    action: "CLICK",
+                    target: currentStepPlan.legacyTarget,
+                    groundingMethod: "keyword-rule"
+                  };
+                } else {
+                  agentAction = {
+                    action: "NONE",
+                    target: null,
+                    reason: `Could not safely ground click target '${currentStepPlan.targetHint}' on DOM.`
+                  };
+                }
+              }
+            }
+          } else if (plannedType === "SCROLL") {
+            if (!agentAction || agentAction.action !== "SCROLL") {
+              agentAction = {
+                action: "SCROLL",
+                target: "PAGE",
+                amount: currentStepPlan.amount || 500
+              };
+            }
           }
         }
 
@@ -1233,8 +1438,9 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         }
 
+        const stepIdentifier = currentStepPlan ? `step_${currentStep - 1}:${currentStepPlan.type}:${currentStepPlan.fieldHint || currentStepPlan.targetHint || ""}` : `step_${currentStep}`;
         const actionTargetIdentifier = agentAction?.target || (agentAction?.targetIndex !== undefined ? `#${agentAction.targetIndex}:${agentAction.targetType}:${agentAction.targetLabel}` : "");
-        const actionKey = `${agentAction?.action}:${actionTargetIdentifier}:${agentAction?.amount || ""}`;
+        const actionKey = `${stepIdentifier}:${agentAction?.action}:${actionTargetIdentifier}:${agentAction?.amount || ""}`;
 
         // Step 8: Stall Guard (Check if identical action proposed again with no screen change)
         if (currentStep > 1 && lastActionKey === actionKey) {
@@ -1279,12 +1485,45 @@ document.addEventListener("DOMContentLoaded", () => {
           break;
         }
 
-        // Step 10: Safe Execution via Local Allowlist in content.js (Milestones 5, 6, 14, 15 & 16)
+        // Step 10: Safe Execution via Local Allowlist in content.js (Milestones 5, 6, 14, 15, 16 & 17)
         let actionExecutionSummary = "";
         let actionExecutedSuccessfully = false;
 
         let executionPayload = null;
         if (agentAction.action === "FILL") {
+          // Phase 7 Safety Guard: Never fill the wrong field
+          if (currentStepPlan && currentStepPlan.type === "FILL") {
+            const hintNorm = (currentStepPlan.fieldHint || "").toLowerCase().replace(/[:*_\-\/\\]+/g, " ").trim();
+            const targetNorm = (agentAction.targetLabel || "").toLowerCase().replace(/[:*_\-\/\\]+/g, " ").trim();
+            const hintTokens = new Set(hintNorm.split(/\s+/).filter(Boolean));
+            const targetTokens = new Set(targetNorm.split(/\s+/).filter(Boolean));
+            let sharesToken = false;
+            for (const ht of hintTokens) {
+              if (targetTokens.has(ht)) { sharesToken = true; break; }
+            }
+            const isSynonym = (hintNorm === "name" && targetNorm.includes("name")) ||
+              (hintNorm.includes("name") && targetNorm.includes("name")) ||
+              (hintNorm.includes("email") && targetNorm.includes("email")) ||
+              (hintNorm.includes("address") && targetNorm.includes("address")) ||
+              (hintNorm.includes("phone") && targetNorm.includes("phone")) ||
+              (hintNorm.includes("city") && targetNorm.includes("city"));
+
+            if (!sharesToken && !isSynonym && !targetNorm.includes(hintNorm) && !hintNorm.includes(targetNorm)) {
+              if (agentSafetyStatus) agentSafetyStatus.textContent = "SAFETY REJECT: Target Mismatch";
+              if (agentExecutionStatus) agentExecutionStatus.textContent = `Halted: Grounded '${agentAction.targetLabel}' does not match requested field '${currentStepPlan.fieldHint}'`;
+              executionTraceHistory.push({
+                step: currentStep,
+                requestId,
+                action: agentAction,
+                executed: false,
+                status: "mismatch_rejected",
+                executionResult: `Rejected: Target '${agentAction.targetLabel}' does not match requested field '${currentStepPlan.fieldHint}'`,
+                verification: "Phase 7 Safety Check (Never fill wrong field)"
+              });
+              renderTraceHistory();
+              break;
+            }
+          }
           // CRITICAL PRIVACY: localValue is supplied from in-memory popup.js store via local IPC only
           let localVal = "";
 
@@ -1370,6 +1609,265 @@ document.addEventListener("DOMContentLoaded", () => {
           executionPayload = agentAction;
         }
 
+        // =====================================================================
+        // Final Architecture: On-Device Reasoning & Safety Gate (Human Approval)
+        // =====================================================================
+        let stepPlanForCheck = currentStepPlan || (reasoningPlan && reasoningPlan.steps ? reasoningPlan.steps[currentStep - 1] : null);
+
+        let safetyGate = { allowed: true, requiresApproval: false, risk: "LOW", reason: "Safe action" };
+        if (window.SIHReasoningPlanner && typeof window.SIHReasoningPlanner.evaluateSafetyGate === "function") {
+          safetyGate = window.SIHReasoningPlanner.evaluateSafetyGate(
+            agentAction,
+            stepPlanForCheck,
+            null, // No approval token prior to user prompt
+            { url: tab?.url, title: pageData?.title, visualElements: latestVisualElements }
+          );
+        }
+
+        // Preconditions check: verify dependencies (e.g. prior fields verified before Submit)
+        if (window.SIHReasoningPlanner && typeof window.SIHReasoningPlanner.validatePreconditions === "function" && stepPlanForCheck) {
+          const preCheck = window.SIHReasoningPlanner.validatePreconditions(
+            stepPlanForCheck,
+            executionTraceHistory,
+            null
+          );
+          const isSatisfied = preCheck ? (preCheck.satisfied ?? preCheck.valid ?? true) : true;
+          if (!isSatisfied && !safetyGate.requiresApproval && !preCheck.requiresHumanApproval) {
+            safetyGate.allowed = false;
+            safetyGate.reason = preCheck.reason;
+            safetyGate.rejectionReason = preCheck.reason;
+          }
+        }
+
+        // Update Safety UI
+        if (plannerRiskBadge) {
+          plannerRiskBadge.textContent = safetyGate.risk;
+          plannerRiskBadge.style.background = (safetyGate.risk === "HIGH" || safetyGate.risk === "CRITICAL") ? "#fee2e2" : ((safetyGate.risk === "MEDIUM") ? "#fef3c7" : "#e0e7ff");
+          plannerRiskBadge.style.color = (safetyGate.risk === "HIGH" || safetyGate.risk === "CRITICAL") ? "#b91c1c" : ((safetyGate.risk === "MEDIUM") ? "#b45309" : "#3730a3");
+        }
+        if (plannerSafetyDecision) {
+          plannerSafetyDecision.textContent = safetyGate.allowed
+            ? (safetyGate.requiresApproval ? "APPROVAL REQUIRED" : "PASSED (Safe Action)")
+            : `BLOCKED: ${safetyGate.rejectionReason || safetyGate.reason}`;
+          plannerSafetyDecision.style.color = safetyGate.allowed
+            ? (safetyGate.requiresApproval ? "#d97706" : "#166534")
+            : "#dc2626";
+        }
+        if (plannerApprovalStatus) {
+          plannerApprovalStatus.textContent = safetyGate.requiresApproval ? "WAITING FOR USER" : "NOT REQUIRED";
+          plannerApprovalStatus.style.color = safetyGate.requiresApproval ? "#dc2626" : "#1e1b4b";
+        }
+        if (safetyGate.allowed && !safetyGate.requiresApproval) {
+          if (agentSafetyStatus) agentSafetyStatus.textContent = "PASSED (Safe Action)";
+        }
+
+        // 1. If action requires Human Approval (Submit, Send, Delete, Purchase, etc.)
+        if (safetyGate.requiresApproval) {
+          appendPlannerTrace(`Consequential action '${agentAction.action} \u2192 ${targetStr}' requires explicit human approval.`);
+          if (agentStepText) agentStepText.textContent = `Step ${currentStep}: WAITING FOR HUMAN APPROVAL`;
+          if (agentVerificationText) {
+            agentVerificationText.textContent = "Action paused: Consequential action requires explicit human approval.";
+            agentVerificationText.style.color = "#e11d48";
+          }
+          if (plannerApprovalStatus) {
+            plannerApprovalStatus.textContent = "WAITING FOR USER APPROVAL";
+            plannerApprovalStatus.style.color = "#dc2626";
+          }
+          if (popupApprovalContainer) {
+            popupApprovalContainer.style.display = "block";
+            if (popupApprovalAction) popupApprovalAction.textContent = `${agentAction.action} \u2192 ${targetStr}`;
+            if (popupApprovalReason) popupApprovalReason.textContent = safetyGate.reason;
+          }
+
+          // Trigger In-Page modal in active tab
+          const inPageApprovalPromise = new Promise((resolve) => {
+            chrome.tabs.sendMessage(
+              tab.id,
+              {
+                action: "requestHumanApproval",
+                payload: {
+                  action: agentAction.action,
+                  target: targetStr,
+                  risk: safetyGate.risk,
+                  reason: safetyGate.reason,
+                  taskSummary: task
+                }
+              },
+              (res) => {
+                if (chrome.runtime.lastError || !res) {
+                  // Tab didn't respond or message channel closed
+                } else {
+                  resolve(res);
+                }
+              }
+            );
+          });
+
+          // Popup button listeners
+          const popupApprovalPromise = new Promise((resolve) => {
+            const onApprove = () => {
+              cleanup();
+              resolve({ approved: true });
+            };
+            const onCancel = () => {
+              cleanup();
+              resolve({ approved: false, cancelled: true });
+            };
+            const cleanup = () => {
+              if (popupBtnApprove) popupBtnApprove.removeEventListener("click", onApprove);
+              if (popupBtnCancel) popupBtnCancel.removeEventListener("click", onCancel);
+            };
+            if (popupBtnApprove) popupBtnApprove.addEventListener("click", onApprove);
+            if (popupBtnCancel) popupBtnCancel.addEventListener("click", onCancel);
+          });
+
+          // Await genuine user approval - NO TIMEOUT, NO DEFAULT TRUE
+          const userDecision = await Promise.race([
+            inPageApprovalPromise,
+            popupApprovalPromise
+          ]);
+
+          // Cleanup approval UI
+          if (popupApprovalContainer) popupApprovalContainer.style.display = "none";
+          chrome.tabs.sendMessage(tab.id, { action: "dismissHumanApproval" }, () => {
+            if (chrome.runtime.lastError) {}
+          });
+
+          // Handle Cancellation
+          if (!userDecision || !userDecision.approved) {
+            appendPlannerTrace("Execution cancelled by user.");
+            if (plannerApprovalStatus) {
+              plannerApprovalStatus.textContent = "CANCELLED BY USER";
+              plannerApprovalStatus.style.color = "#dc2626";
+            }
+            if (agentExecutionStatus) agentExecutionStatus.textContent = "Execution cancelled by user.";
+            if (agentSafetyStatus) agentSafetyStatus.textContent = "CANCELLED BY USER";
+            if (executionOutput) executionOutput.value = "Execution cancelled by user.";
+            if (agentVerificationText) {
+              agentVerificationText.textContent = "Execution cancelled by user. Page state preserved.";
+              agentVerificationText.style.color = "#dc2626";
+            }
+            executionTraceHistory.push({
+              step: currentStep,
+              requestId,
+              action: agentAction,
+              executed: false,
+              status: "cancelled_by_user",
+              executionResult: "Execution cancelled by user.",
+              verification: "No action performed; page preserved"
+            });
+            renderTraceHistory();
+            break;
+          }
+
+          // User Approved - Enforce Dynamic DOM re-grounding & invalidation check
+          appendPlannerTrace(`User approved ${agentAction.action} \u2192 ${targetStr}. Re-verifying target on live page.`);
+          if (plannerApprovalStatus) {
+            plannerApprovalStatus.textContent = "APPROVED BY USER";
+            plannerApprovalStatus.style.color = "#166534";
+          }
+
+          // Dynamic DOM Re-verification: Target element must still be valid
+          const freshCheckData = await new Promise((resolve) => {
+            chrome.tabs.sendMessage(tab.id, { action: "getPageInfo" }, (resp) => {
+              resolve(resp || null);
+            });
+          });
+
+          let targetReverified = false;
+          if (freshCheckData && Array.isArray(freshCheckData.visualElements)) {
+            if (agentAction.targetIndex !== undefined) {
+              const currentEl = freshCheckData.visualElements[agentAction.targetIndex];
+              if (currentEl && currentEl.label === agentAction.targetLabel) {
+                targetReverified = true;
+              } else {
+                // Re-find target in case DOM shifted slightly
+                const foundIdx = freshCheckData.visualElements.findIndex(
+                  (el) => el.label === agentAction.targetLabel && el.type === agentAction.targetType
+                );
+                if (foundIdx >= 0) {
+                  agentAction.targetIndex = foundIdx;
+                  if (executionPayload) executionPayload.targetIndex = foundIdx;
+                  targetReverified = true;
+                }
+              }
+            } else if (agentAction.target) {
+              targetReverified = true;
+            }
+          } else {
+            targetReverified = true;
+          }
+
+          if (!targetReverified) {
+            appendPlannerTrace("Target changed or moved after approval. Safety gate re-locked.");
+            if (agentSafetyStatus) agentSafetyStatus.textContent = "APPROVAL INVALIDATED: Target Drift";
+            if (agentExecutionStatus) agentExecutionStatus.textContent = "Target moved or disappeared after approval. Halted.";
+            executionTraceHistory.push({
+              step: currentStep,
+              requestId,
+              action: agentAction,
+              executed: false,
+              status: "approval_invalidated",
+              executionResult: "Target drifted after approval. Execution halted.",
+              verification: "Dynamic DOM verification protected action"
+            });
+            renderTraceHistory();
+            break;
+          }
+
+          // Re-evaluate safety gate with valid approval token
+          const currentApprovalToken = {
+            approved: true,
+            action: agentAction.action,
+            target: agentAction.targetLabel || agentAction.target || targetStr,
+            pageUrl: tab?.url,
+            timestamp: Date.now()
+          };
+          if (window.SIHReasoningPlanner && typeof window.SIHReasoningPlanner.evaluateSafetyGate === "function") {
+            const recheckGate = window.SIHReasoningPlanner.evaluateSafetyGate(
+              agentAction,
+              stepPlanForCheck,
+              currentApprovalToken,
+              { url: tab?.url, title: freshCheckData?.title || pageData?.title, visualElements: freshCheckData?.visualElements }
+            );
+            if (!recheckGate.allowed) {
+              appendPlannerTrace(`Safety Gate rejected even with approval: ${recheckGate.reason}`);
+              if (agentSafetyStatus) agentSafetyStatus.textContent = `SAFETY BLOCKED: ${recheckGate.reason}`;
+              if (agentExecutionStatus) agentExecutionStatus.textContent = `Halted: ${recheckGate.reason}`;
+              executionTraceHistory.push({
+                step: currentStep,
+                requestId,
+                action: agentAction,
+                executed: false,
+                status: "safety_blocked",
+                executionResult: recheckGate.reason,
+                verification: "Safety gate post-approval recheck"
+              });
+              renderTraceHistory();
+              break;
+            }
+          }
+        } else if (!safetyGate.allowed) {
+          // 2. If safety gate rejected without approval requirement (e.g. CRITICAL or invalid action)
+          appendPlannerTrace(`Safety Gate rejected action: ${safetyGate.rejectionReason || safetyGate.reason}`);
+          if (agentSafetyStatus) agentSafetyStatus.textContent = `SAFETY BLOCKED: ${safetyGate.rejectionReason || safetyGate.reason}`;
+          if (agentExecutionStatus) agentExecutionStatus.textContent = `Halted by Safety Gate: ${safetyGate.reason}`;
+          executionTraceHistory.push({
+            step: currentStep,
+            requestId,
+            action: agentAction,
+            executed: false,
+            status: "safety_blocked",
+            executionResult: `Blocked by Safety Gate: ${safetyGate.reason}`,
+            verification: "Safety gate policy enforcement"
+          });
+          renderTraceHistory();
+          break;
+        }
+
+        console.log("[SIH26171] Safety validation completed");
+
+        console.log("[SIH26171] Action execution started");
         if (executionOutput) executionOutput.value = "Executing action via local allowlist...";
         await new Promise((resolveExec) => {
           chrome.tabs.sendMessage(
@@ -1407,6 +1905,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }
           );
         });
+        console.log("[SIH26171] Action execution completed");
 
         if (executionOutput) executionOutput.value = actionExecutionSummary;
         if (agentExecutionStatus) agentExecutionStatus.textContent = actionExecutionSummary;
@@ -1427,6 +1926,14 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         if (agentSafetyStatus) agentSafetyStatus.textContent = "PASSED (Allowlist Verified)";
+
+        if (actionExecutedSuccessfully) {
+          appendPlannerTrace(`Step ${currentStep} executed: ${agentAction.action} \u2192 ${targetStr}.`);
+          if (stepPlanForCheck) {
+            stepPlanForCheck.completed = true;
+            stepPlanForCheck.verified = true;
+          }
+        }
 
         // Step 11: Post-Action Verification via Screen-Change Detection
         await new Promise((r) => setTimeout(r, ACTION_VERIFICATION_DELAY_MS));
@@ -1486,7 +1993,7 @@ document.addEventListener("DOMContentLoaded", () => {
           window.SIHChangeDetector.compareScreenSignatures(currentSignature, postActionSignature, PIXEL_CHANGE_THRESHOLD).changed);
 
         const hasMorePlannedSteps = isPlannedTask && currentStep < totalPlannedSteps;
-        const shouldContinue = executedThisStep && (hasMorePlannedSteps || (screenActuallyChanged && currentStep < MAX_AGENT_STEPS));
+        const shouldContinue = executedThisStep && (isPlannedTask ? hasMorePlannedSteps : (screenActuallyChanged && currentStep < MAX_AGENT_STEPS));
 
         if (!shouldContinue) {
           if (agentStepText) {
@@ -1500,8 +2007,38 @@ document.addEventListener("DOMContentLoaded", () => {
         lastActionKey = actionKey;
         currentStep++;
       }
-    });
-  }
+
+      if (reasoningPlan && Array.isArray(reasoningPlan.steps) && reasoningPlan.steps.length > 0) {
+        const allCompleted = reasoningPlan.steps.every((s) => s.completed || s.verified);
+        if (allCompleted) {
+          appendPlannerTrace("All requested form fields and actions verified. Task complete.");
+        }
+      }
+    } catch (err) {
+      console.error("[SIH26171] Run Agent Task error:", err);
+      const errMsg = (err && err.message) ? err.message : String(err);
+      if (agentTaskText) agentTaskText.textContent = task;
+      if (agentExecutionStatus) agentExecutionStatus.textContent = `FAILED: ${errMsg}`;
+      if (agentSafetyStatus) agentSafetyStatus.textContent = "Error";
+      if (agentReasoningText) agentReasoningText.textContent = `Error: ${errMsg}`;
+      if (executionOutput) executionOutput.value = `FAILED: ${errMsg}`;
+      if (agentVerificationText) {
+        agentVerificationText.textContent = `Error: ${errMsg}`;
+        agentVerificationText.style.color = "#dc2626";
+      }
+      executionTraceHistory.push({
+        step: typeof currentStep !== "undefined" ? currentStep : 1,
+        requestId: typeof currentRequestId !== "undefined" ? currentRequestId : "SIH-ERR",
+        action: null,
+        executed: false,
+        status: "error",
+        executionResult: `FAILED: ${errMsg}`,
+        verification: `Error: ${errMsg}`
+      });
+      renderTraceHistory();
+    }
+  });
+}
 
   // =====================================================================
   // Existing Milestone 1–12 "Capture Page Info" Button Listener (Preserved)

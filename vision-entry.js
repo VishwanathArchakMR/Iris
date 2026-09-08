@@ -71,16 +71,28 @@ async function runVisionInference(imageData) {
     const output = results[outputName].data;
 
     let bestIndex = 0;
+    let maxLogit = -Infinity;
 
-    for (let i = 1; i < output.length; i++) {
+    for (let i = 0; i < output.length; i++) {
         if (output[i] > output[bestIndex]) {
             bestIndex = i;
         }
+        if (output[i] > maxLogit) {
+            maxLogit = output[i];
+        }
     }
+
+    // Numerically stable softmax to produce bounded class probabilities [0, 1]
+    let sumExp = 0;
+    for (let i = 0; i < output.length; i++) {
+        sumExp += Math.exp(output[i] - maxLogit);
+    }
+    const topProb = sumExp > 0 ? (Math.exp(output[bestIndex] - maxLogit) / sumExp) : 0;
+    const boundedConfidence = Math.max(0.0, Math.min(1.0, topProb));
 
     return {
         classIndex: bestIndex,
-        confidence: Number(output[bestIndex]),
+        confidence: boundedConfidence,
         executionProvider: "wasm"
     };
 }

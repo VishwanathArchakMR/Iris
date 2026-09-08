@@ -47,6 +47,56 @@
 
   <button id="captureBtn">Capture Page Info (Local Pipeline Only)</button>
 
+  <!-- Local Reasoning & Safety Planner Panel -->
+  <label for="reasoningPlannerContainer" style="display: block; margin-top: 10px;"><strong>Local Reasoning &amp; Safety Planner (Deterministic &amp; On-Device):</strong></label>
+  <div id="reasoningPlannerContainer" style="border: 1px solid #7c3aed; padding: 10px; border-radius: 6px; background: #fdf4ff; font-size: 12px; line-height: 1.5; color: #1e1b4b;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+      <span style="font-weight: bold; color: #6d28d9;">ON-DEVICE REASONING &amp; SAFETY</span>
+      <span id="plannerEngineBadge" style="font-size: 10px; background: #ede9fe; color: #5b21b6; border: 1px solid #c4b5fd; padding: 2px 6px; border-radius: 9999px; font-weight: 600;">DETERMINISTIC &bull; AUDITABLE</span>
+    </div>
+
+    <div><strong>Task Understanding:</strong> <span id="plannerTaskUnderstanding" style="font-style: italic; color: #4338ca;">Awaiting task input...</span></div>
+    
+    <div style="margin-top: 6px;">
+      <strong>Execution Plan:</strong>
+      <div id="plannerExecutionPlan" style="margin-top: 4px; background: #ffffff; border: 1px solid #e9d5ff; border-radius: 4px; padding: 6px; max-height: 120px; overflow-y: auto; font-family: monospace; font-size: 11px;">
+        (No task planned yet)
+      </div>
+    </div>
+
+    <div style="margin-top: 6px;">
+      <strong>Reasoning &amp; Safety Trace:</strong>
+      <div id="plannerReasoningTrace" style="margin-top: 4px; background: #ffffff; border: 1px solid #e9d5ff; border-radius: 4px; padding: 6px; max-height: 100px; overflow-y: auto; font-family: monospace; font-size: 11px; line-height: 1.4;">
+        (Trace will appear here)
+      </div>
+    </div>
+
+    <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed #c4b5fd;">
+      <div><strong>Action Risk Classification:</strong> <span id="plannerRiskBadge" style="font-weight: bold; padding: 2px 6px; border-radius: 3px; font-size: 11px; background: #e0e7ff; color: #3730a3;">LOW</span></div>
+      <div><strong>Safety Gate Decision:</strong> <span id="plannerSafetyDecision" style="font-weight: bold; color: #166534;">PASSED (Safe Action)</span></div>
+      <div><strong>Human Approval:</strong> <span id="plannerApprovalStatus" style="font-weight: bold; color: #1e1b4b;">NOT REQUIRED</span></div>
+    </div>
+
+    <!-- Human Approval Container in Popup -->
+    <div id="popupApprovalContainer" style="display: none; margin-top: 8px; padding: 10px; border-radius: 6px; background: #fff1f2; border: 2px solid #f43f5e; box-shadow: 0 4px 6px -1px rgba(244, 63, 94, 0.2);">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+        <span style="font-weight: bold; color: #be123c; font-size: 12px;">&#9888; HUMAN APPROVAL MANDATORY</span>
+        <span style="font-size: 10px; background: #e11d48; color: #ffffff; padding: 2px 6px; border-radius: 9999px; font-weight: bold;">HIGH IMPACT</span>
+      </div>
+      <div style="font-size: 11px; color: #881337; margin-bottom: 6px; line-height: 1.4;">
+        A high-impact action has been paused by the local safety gate.
+      </div>
+      <div style="background: #ffffff; border: 1px solid #fecdd3; border-radius: 4px; padding: 6px; font-size: 11px; margin-bottom: 8px; line-height: 1.5;">
+        <div><strong>Action:</strong> <span id="popupApprovalAction" style="color: #0284c7; font-family: monospace; font-weight: bold;">CLICK &rarr; Submit</span></div>
+        <div><strong>Reason:</strong> <span id="popupApprovalReason" style="color: #4b5563;">This action submits form data.</span></div>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <button id="popupBtnApprove" style="flex: 1; background: #059669; color: #ffffff; border: none; border-radius: 4px; padding: 8px; font-weight: bold; font-size: 12px; cursor: pointer;">Approve &amp; Continue</button>
+        <button id="popupBtnCancel" style="flex: 1; background: #e11d48; color: #ffffff; border: none; border-radius: 4px; padding: 8px; font-weight: bold; font-size: 12px; cursor: pointer;">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Milestone 13: Browser Agent Status Panel -->
   <label for="agentStatusContainer" style="display: block; margin-top: 10px;"><strong>Browser Agent Status (Milestone 13 Gateway):</strong></label>
   <div id="agentStatusContainer" style="border: 1px solid #1565c0; padding: 10px; border-radius: 6px; background: #f0f7ff; font-size: 12px; line-height: 1.5; color: #222;">
@@ -60,15 +110,19 @@
     <div><strong>Redaction:</strong> <span id="agentRedactionStatus">-</span></div>
     <div><strong>Sanitized visual context:</strong> <span id="agentSanitizedStatus">Awaiting pipeline</span></div>
     <div style="margin-top: 4px; margin-bottom: 4px;">
-      <strong>Raw screenshot upload:</strong>
-      <span id="agentRawUploadStatus" style="color: #c62828; font-weight: bold; background: #ffebee; padding: 2px 6px; border-radius: 3px; border: 1px solid #ef9a9a;">BLOCKED (Never transmitted)</span>
+      <strong>Raw screenshot:</strong>
+      <span id="agentRawUploadStatus" style="color: #c62828; font-weight: bold; background: #ffebee; padding: 2px 6px; border-radius: 3px; border: 1px solid #ef9a9a;">BLOCKED</span>
     </div>
     <div style="margin-top: 2px; margin-bottom: 4px;">
-      <strong>Sanitized screenshot upload:</strong>
-      <span id="agentSanitizedUploadStatus" style="color: #2e7d32; font-weight: bold; background: #e8f5e9; padding: 2px 6px; border-radius: 3px; border: 1px solid #a5d6a7;">AWAITING</span>
+      <strong>Sanitized context:</strong>
+      <span id="agentSanitizedUploadStatus" style="color: #2e7d32; font-weight: bold; background: #e8f5e9; padding: 2px 6px; border-radius: 3px; border: 1px solid #a5d6a7;">READY</span>
     </div>
+    <div><strong>Sensitive data:</strong> <span id="agentSensitiveDataStatus" style="color: #2e7d32; font-weight: bold;">LOCAL ONLY</span></div>
+    <div><strong>Reasoning:</strong> <span id="agentReasoningLocation" style="color: #2e7d32; font-weight: bold;">LOCAL</span></div>
+    <div><strong>Safety decision:</strong> <span id="agentSafetyDecisionStatus" style="color: #2e7d32; font-weight: bold;">LOCAL</span></div>
+    <div><strong>Human approval:</strong> <span id="agentApprovalGateStatus" style="color: #1565c0; font-weight: bold;">ENFORCED</span></div>
     <div><strong>Agent:</strong> <span id="agentModeStatus" style="font-weight: bold; color: #0d47a1;">DEMO MODE</span> <span style="font-size: 11px; color: #555;">(Deterministic local agent; no external AI API keys)</span></div>
-    <div><strong>Agent Loop:</strong> <span id="agentStepText" style="font-weight: bold; color: #1565c0;">Step 1 of up to 3</span></div>
+    <div><strong>Agent Loop:</strong> <span id="agentStepText" style="font-weight: bold; color: #1565c0;">-</span></div>
     <div><strong>Change Verification:</strong> <span id="agentVerificationText" style="font-weight: bold; color: #333;">Awaiting action...</span></div>
     <div><strong>Agent action:</strong> <span id="agentActionText" style="font-family: monospace; font-weight: bold;">-</span></div>
     <div><strong>Agent reasoning:</strong> <span id="agentReasoningText" style="font-style: italic; color: #444;">-</span></div>
@@ -144,8 +198,9 @@
     <textarea id="elementsOutput" rows="7" readonly placeholder="Detected visual elements will appear here..." style="width: 100%; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px;"></textarea>
   </div>
 
-  <label for="visionClassificationContainer" style="display: block; margin-top: 10px;"><strong>Local Vision Classification:</strong></label>
+  <label for="visionClassificationContainer" style="display: block; margin-top: 10px;"><strong>On-Device Image Classification (SqueezeNet ONNX):</strong></label>
   <div id="visionClassificationContainer" style="border: 1px solid #ccc; padding: 8px; border-radius: 4px; background: #fafafa;">
+    <div style="font-size: 10px; color: #666; font-style: italic; margin-bottom: 4px;">General scene/image classification. UI element grounding is performed via DOM/accessibility/geometry + local OCR.</div>
     <div id="visionStatus" style="font-size: 12px; color: #555; margin-bottom: 4px;">Awaiting capture...</div>
     <div id="visionDetails" style="font-size: 12px; font-family: monospace; color: #333; line-height: 1.5; display: none;">
       <div><strong>Status:</strong> <span id="visionStatusText">Completed</span></div>
@@ -213,6 +268,7 @@
   <script src="perception-fusion.js"></script>
   <script src="change-detector.js"></script>
   <script src="task-parser.js"></script>
+  <script src="reasoning-planner.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

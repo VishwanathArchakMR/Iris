@@ -62,28 +62,88 @@
     const text = (clause || "").trim();
     if (!text) return null;
 
+    // Explicit non-fill actions must never be parsed as fill clauses
+    if (/^(?:click|press|tap|open|scroll|view|navigate|go\s+to)\b/i.test(text)) {
+      return null;
+    }
+
     // Pattern 1: '[enter/type/put] <val> in/into/for <field>'
-    const enterInMatch = text.match(/^(?:(?:enter|type|put)\s+)?(.+?)\s+in(?:to)?\s+(?:the\s+)?([a-zA-Z0-9_\-\s]+?)(?:\s+field|\s+input|\s+box)?$/i);
+    const enterInMatch = text.match(/^(?:(?:enter|type|put)\s+)?(.+?)\s+in(?:to|for)?\s+(?:the\s+)?([a-zA-Z0-9_\-\s]+?)(?:\s+field|\s+input|\s+box|\s+area)?$/i);
     if (enterInMatch) {
       const val = enterInMatch[1].trim();
       const field = enterInMatch[2].trim();
-      if (val && field && !/^(?:the|a|an)$/i.test(val)) {
+      if (val && field && !/^(?:the|a|an|to)$/i.test(val)) {
         return { type: "FILL", fieldHint: field, value: val };
       }
     }
 
-    // Pattern 2: '[fill/set/enter/type/put] [in/into] [the] <field> with/to/as/is/:/= <val>'
-    // Or without leading verb: '[the] <field> with/to/as/is/:/= <val>'
-    const fillAsMatch = text.match(/^(?:(?:fill|set|enter|type|put)\s+(?:in\s+|into\s+)?)?(?:the\s+)?([a-zA-Z0-9_\-\s]+?)(?:\s+(?:with|to|as|is|:=|=)\s+|\s*:\s*)(.+)$/i);
-    if (fillAsMatch) {
-      const field = fillAsMatch[1].trim();
-      const val = fillAsMatch[2].trim();
+    // Pattern 2a: With explicit fill verb: '[fill/set/enter/type/put] [in/into] [the] <field> with/to/as/is/:/= <val>'
+    const explicitFillMatch = text.match(/^(?:fill|set|enter|type|put)\s+(?:in\s+|into\s+)?(?:the\s+)?([a-zA-Z0-9_\-\s]+?)(?:\s+(?:with|to|as|is|:=|=)\s+|\s*:\s*)(.+)$/i);
+    if (explicitFillMatch) {
+      const field = explicitFillMatch[1].trim();
+      const val = explicitFillMatch[2].trim();
+      if (field && val) {
+        return { type: "FILL", fieldHint: field, value: val };
+      }
+    }
+
+    // Pattern 2b: Without leading verb: '[the] <field> with/as/is/:/= <val>' (disallows 'to' without fill verb to prevent phrase collisions)
+    const implicitFillMatch = text.match(/^(?:the\s+)?([a-zA-Z0-9_\-\s]+?)(?:\s+(?:with|as|is|:=|=)\s+|\s*:\s*)(.+)$/i);
+    if (implicitFillMatch) {
+      const field = implicitFillMatch[1].trim();
+      const val = implicitFillMatch[2].trim();
       if (field && val) {
         return { type: "FILL", fieldHint: field, value: val };
       }
     }
 
     return null;
+  }
+
+  /**
+   * Normalizes natural language idioms, connectors, and pronoun references in task text.
+   * Ensures phrases like "find [the] <target> and/then click it" are interpreted as
+   * a single click intent, avoiding spurious "click it" steps.
+   *
+   * @param {string} rawTask
+   * @returns {string}
+   */
+  function normalizeTaskPhrasing(rawTask) {
+    let text = normalizeText(rawTask);
+    if (!text) return "";
+
+    // 1. Normalize "find/locate/search for/look for [the] <TARGET> and/then/and then click/press/tap it"
+    // -> "click [the] <TARGET>"
+    text = text.replace(
+      /\b(?:find|locate|search\s+for|look\s+for)\s+(?:the\s+)?([a-zA-Z0-9_\-\s]+?)\s*(?:,\s*|\s+)(?:and\s+then\s+|and\s+|then\s+)(?:click|press|tap)\s+(?:on\s+)?it\b/gi,
+      (match, target) => {
+        const cleanTarget = target.trim();
+        return `click ${cleanTarget}`;
+      }
+    );
+
+    // 2. Normalize "find/locate/search for/look for [the] <TARGET> button/link and/then click it"
+    text = text.replace(
+      /\b(?:find|locate|search\s+for|look\s+for)\s+(?:the\s+)?([a-zA-Z0-9_\-\s]+?)\s+(?:button|link)\s*(?:,\s*|\s+)(?:and\s+then\s+|and\s+|then\s+)(?:click|press|tap)\s+(?:on\s+)?it\b/gi,
+      (match, target) => {
+        const cleanTarget = target.trim();
+        return `click ${cleanTarget} button`;
+      }
+    );
+
+    // 3. Normalize "[the] <TARGET> [button/link] and then click it" or ", then click it" when preceded by a clickable target
+    text = text.replace(
+      /(?:(?:the\s+)?([a-zA-Z0-9_\-]+(?:\s+button|\s+link)?))\s*(?:,\s*|\s+)(?:and\s+then\s+|and\s+|then\s+)(?:click|press|tap)\s+(?:on\s+)?it\b/gi,
+      (match, target) => {
+        const cleanTarget = (target || "").trim();
+        if (/^(?:fill|enter|type|put|set|is|as|with|in|into|then|and)$/i.test(cleanTarget)) {
+          return match;
+        }
+        return `click ${cleanTarget}`;
+      }
+    );
+
+    return text;
   }
 
   /**
@@ -94,18 +154,30 @@
    * @returns {Object} Structured intent with sanitized plan and private local values
    */
   function parseTask(rawTask) {
-    const task = normalizeText(rawTask);
+    const task = normalizeTaskPhrasing(rawTask);
     if (!task) {
       return createNoneResult("Empty task");
     }
 
     const lower = task.toLowerCase();
 
-    // 1. Check for sequential clauses: e.g. "..., then ..." or "... and then ..."
-    const sequentialSplit = task.split(/\s*(?:,\s*then|\s+then|\s*;\s*then|\s*,\s*and\s+then)\s+/i);
+    // 1. Check for sequential clauses: e.g. "..., then ...", "... and then ...", "... then ..."
+    const sequentialSplit = task.split(/\s*(?:,\s*then|\s+then|\s*;\s*then|\s*,\s*and\s+then|\s+and\s+then)\s+/i);
     if (sequentialSplit.length > 1) {
       const firstPart = sequentialSplit[0].trim();
       const secondPart = sequentialSplit.slice(1).join(" then ").trim();
+
+      // Check if secondPart is just pronoun referral like "click it", "press it", "tap it"
+      if (/^(?:click|press|tap)\s+(?:on\s+)?(?:it|this|that|them)$/i.test(secondPart)) {
+        const firstResult = parseTask(firstPart);
+        if (firstResult.intent !== "NONE" && Array.isArray(firstResult.steps) && firstResult.steps.length > 0) {
+          const lastStep = firstResult.steps[firstResult.steps.length - 1];
+          if (lastStep.type === "CLICK") {
+            // Already specifies the click action; avoid duplicate "click it"
+            return firstResult;
+          }
+        }
+      }
 
       const firstResult = parseTask(firstPart);
       const secondResult = parseTask(secondPart);
@@ -139,11 +211,27 @@
       const parsedClauses = [];
       let allValid = true;
       for (const clause of andSplit) {
-        const fillStep = parseFillClause(clause);
+        const trimmedClause = clause.trim();
+
+        // Check if this clause is a pronoun referral like "click it", "then click it", "and click it"
+        if (/^(?:and\s+)?(?:then\s+)?(?:click|press|tap)\s+(?:on\s+)?(?:it|this|that|them)$/i.test(trimmedClause)) {
+          if (parsedClauses.length > 0) {
+            const lastStep = parsedClauses[parsedClauses.length - 1];
+            // If the preceding step was already a CLICK action, "click it" is redundant confirmation
+            if (lastStep.type === "CLICK") {
+              continue;
+            }
+          }
+          // Standalone or unresolvable pronoun referral
+          allValid = false;
+          break;
+        }
+
+        const fillStep = parseFillClause(trimmedClause);
         if (fillStep) {
           parsedClauses.push(fillStep);
         } else {
-          const subTaskRes = parseTask(clause);
+          const subTaskRes = parseTask(trimmedClause);
           if (subTaskRes.intent !== "NONE" && Array.isArray(subTaskRes.steps) && subTaskRes.steps.length > 0 && subTaskRes.steps[0].type !== "NONE") {
             parsedClauses.push(...subTaskRes.steps);
           } else {
@@ -163,8 +251,23 @@
       return buildResultFromSteps([singleFill]);
     }
 
-    // 5. SCROLL intents: "scroll down", "scroll", "scroll down a bit"
-    if (/^scroll(?:\s+down)?(?:\s+a\s+bit|\s+more|\s+page)?$/i.test(lower) || /^(?:view|read)\s+more$/i.test(lower)) {
+    // 5. SCROLL intents:
+    // 5a. Bounded numeric scroll: "scroll down 500", "scroll down 500 pixels", "scroll 300px"
+    const scrollNumMatch = lower.match(/^scroll(?:\s+down)?\s+(\d+)(?:\s*(?:pixels|px))?$/i);
+    if (scrollNumMatch) {
+      const rawAmt = parseInt(scrollNumMatch[1], 10);
+      const safeAmt = isNaN(rawAmt) ? DEFAULT_SCROLL_AMOUNT : Math.min(Math.max(rawAmt, 50), 1500);
+      return buildResultFromSteps([
+        {
+          type: "SCROLL",
+          target: "PAGE",
+          amount: safeAmt
+        }
+      ]);
+    }
+
+    // 5b. General scroll: "scroll down", "scroll", "scroll down a bit", "scroll to find the form"
+    if (/^scroll(?:\s+down)?(?:\s+a\s+bit|\s+more|\s+page)?$/i.test(lower) || /^(?:view|read)\s+more$/i.test(lower) || /^scroll\s+to\s+/i.test(lower)) {
       return buildResultFromSteps([
         {
           type: "SCROLL",
@@ -174,10 +277,47 @@
       ]);
     }
 
-    // 6. CLICK intents: "click X", "click the X button", "press X"
-    const clickMatch = task.match(/^(?:click|press|tap)\s+(?:on\s+)?(?:the\s+)?([a-zA-Z0-9_\-\s]+?)(?:\s+button)?$/i);
+    // 6. CLICK intents:
+    // 6a. Explicitly labelled/named: "click the button labelled Register", "press link named Register"
+    const labelledBtnMatch = task.match(/^(?:click|press|tap)\s+(?:on\s+)?(?:the\s+)?(?:button|link)\s+(?:labelled|labeled|named|with\s+text)\s+['"]?([a-zA-Z0-9_\-\s]+?)['"]?$/i);
+    if (labelledBtnMatch) {
+      const targetHint = labelledBtnMatch[1].trim();
+      if (/^(?:it|this|that|them)$/i.test(targetHint)) {
+        return createNoneResult("Cannot resolve pronoun target 'it' without prior clickable context");
+      }
+      return buildResultFromSteps([
+        {
+          type: "CLICK",
+          targetHint: targetHint,
+          legacyTarget: resolveLegacyClickTarget(targetHint)
+        }
+      ]);
+    }
+
+    // 6b. Open page / navigation: "open downloads", "open the downloads page", "go to documentation"
+    const openMatch = task.match(/^(?:open|navigate\s+to|go\s+to)\s+(?:the\s+)?([a-zA-Z0-9_\-\s]+?)(?:\s+page|\s+link|\s+tab)?$/i);
+    if (openMatch) {
+      const targetHint = openMatch[1].trim();
+      if (/^(?:it|this|that|them)$/i.test(targetHint)) {
+        return createNoneResult("Cannot resolve pronoun target 'it' without prior clickable context");
+      }
+      return buildResultFromSteps([
+        {
+          type: "CLICK",
+          targetHint: targetHint,
+          legacyTarget: resolveLegacyClickTarget(targetHint)
+        }
+      ]);
+    }
+
+    // 6c. Standard CLICK: "click add to cart", "press submit", "click continue", "tap on search"
+    const clickMatch = task.match(/^(?:click|press|tap)\s+(?:on\s+)?(?:the\s+)?([a-zA-Z0-9_\-\s]+?)(?:\s+button|\s+link)?$/i);
     if (clickMatch) {
       const targetHint = clickMatch[1].trim();
+      // Never create a standalone target named "it", "this", "that", "them"
+      if (/^(?:it|this|that|them)$/i.test(targetHint)) {
+        return createNoneResult("Cannot resolve pronoun target 'it' without prior clickable context");
+      }
       return buildResultFromSteps([
         {
           type: "CLICK",
@@ -218,10 +358,12 @@
 
     let fillStepIndex = 0;
     steps.forEach((step, idx) => {
+      step.stepId = idx;
       if (step.type === "FILL") {
         sanitizedPlan.push({
           type: "FILL",
-          fieldHint: step.fieldHint
+          fieldHint: step.fieldHint,
+          stepId: idx
         });
         // Retain literal values strictly in local in-memory structure
         localValues[idx] = step.value;
@@ -235,16 +377,18 @@
         sanitizedPlan.push({
           type: "CLICK",
           targetHint: step.targetHint,
-          legacyTarget: step.legacyTarget || null
+          legacyTarget: step.legacyTarget || null,
+          stepId: idx
         });
       } else if (step.type === "SCROLL") {
         sanitizedPlan.push({
           type: "SCROLL",
           target: step.target || "PAGE",
-          amount: step.amount || DEFAULT_SCROLL_AMOUNT
+          amount: step.amount || DEFAULT_SCROLL_AMOUNT,
+          stepId: idx
         });
       } else {
-        sanitizedPlan.push({ type: "NONE" });
+        sanitizedPlan.push({ type: "NONE", stepId: idx });
       }
     });
 

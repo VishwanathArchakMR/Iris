@@ -177,6 +177,48 @@
       <input type="text" id="city-field" placeholder="Enter city" style="margin-top: 4px;" />
     </div>
 
+    <!-- 4. Select dropdown -->
+    <div style="margin-bottom: 10px;">
+      <label for="country-select"><strong>Country of Origin:</strong></label>
+      <select id="country-select" style="width: 100%; box-sizing: border-box; padding: 8px; margin-top: 4px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px;">
+        <option value="">Select a country...</option>
+        <option value="IN">India</option>
+        <option value="US">United States</option>
+        <option value="UK">United Kingdom</option>
+        <option value="DE">Germany</option>
+      </select>
+    </div>
+
+    <!-- 5. Checkbox & Radio Controls -->
+    <div style="margin-bottom: 10px;">
+      <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+        <input type="checkbox" id="terms-checkbox" />
+        <span>I accept the Terms and Conditions</span>
+      </label>
+    </div>
+
+    <div style="margin-bottom: 12px;">
+      <span style="font-size: 13px; font-weight: bold; color: #333; display: block; margin-bottom: 4px;">Delivery Option:</span>
+      <label style="margin-right: 14px; cursor: pointer;">
+        <input type="radio" name="delivery_option" value="standard" checked /> Standard Delivery
+      </label>
+      <label style="cursor: pointer;">
+        <input type="radio" name="delivery_option" value="express" /> Express Priority
+      </label>
+    </div>
+
+    <!-- 6. Disabled Element & Ambiguous Elements for Safety Validation -->
+    <div style="margin-top: 14px; padding-top: 10px; border-top: 1px dashed #b2dfdb;">
+      <span style="font-size: 12px; font-weight: bold; color: #555; display: block; margin-bottom: 6px;">Safety Validation Controls:</span>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
+        <button type="button" id="disabled-button" disabled style="padding: 6px 12px; background: #9e9e9e; color: #fff; border: none; border-radius: 4px; cursor: not-allowed;">Disabled Action</button>
+        <button type="button" id="submit-app-button" style="padding: 6px 12px; background: #00897b; color: #fff; border: none; border-radius: 4px; cursor: pointer;">Submit Application</button>
+        <button type="button" id="submit-feedback-button" style="padding: 6px 12px; background: #00897b; color: #fff; border: none; border-radius: 4px; cursor: pointer;">Submit Feedback</button>
+      </div>
+      <button type="button" id="dynamic-element-trigger" style="padding: 6px 12px; background: #5c6bc0; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">+ Dynamically Insert New Element</button>
+      <div id="dynamic-container" style="margin-top: 6px;"></div>
+    </div>
+
     <div id="fill-feedback-box" style="display: none; padding: 8px 12px; background: #e0f2f1; color: #004d40; border: 1px solid #80cbc4; border-radius: 4px; font-size: 12px; font-weight: bold; margin-top: 6px;">
       ✓ Form field updated locally via agent!
     </div>
@@ -325,6 +367,51 @@
         });
       }
     });
+
+    // Safety and generic control listeners
+    const submitAppBtn = document.getElementById("submit-app-button");
+    if (submitAppBtn) {
+      submitAppBtn.addEventListener("click", () => {
+        submitAppBtn.innerText = "Application Sent!";
+        submitAppBtn.style.backgroundColor = "#2e7d32";
+        feedbackBox.style.display = "block";
+        feedbackBox.innerHTML = "✓ Specifically Grounded: 'Submit Application' executed!";
+      });
+    }
+
+    const submitFeedbackBtn = document.getElementById("submit-feedback-button");
+    if (submitFeedbackBtn) {
+      submitFeedbackBtn.addEventListener("click", () => {
+        submitFeedbackBtn.innerText = "Feedback Sent!";
+        submitFeedbackBtn.style.backgroundColor = "#2e7d32";
+        feedbackBox.style.display = "block";
+        feedbackBox.innerHTML = "✓ Specifically Grounded: 'Submit Feedback' executed!";
+      });
+    }
+
+    const dynTrigger = document.getElementById("dynamic-element-trigger");
+    const dynContainer = document.getElementById("dynamic-container");
+    let dynCount = 0;
+    if (dynTrigger && dynContainer) {
+      dynTrigger.addEventListener("click", () => {
+        dynCount++;
+        const newDiv = document.createElement("div");
+        newDiv.style.marginTop = "6px";
+        newDiv.style.padding = "6px 10px";
+        newDiv.style.background = "#e8eaf6";
+        newDiv.style.borderRadius = "4px";
+        newDiv.style.border = "1px solid #c5cae9";
+        newDiv.innerHTML = `<span>Dynamic Item #${dynCount}</span> <button type="button" class="dyn-btn" style="margin-left: 8px; padding: 4px 8px; background: #3f51b5; color: white; border: none; border-radius: 3px; cursor: pointer;">Action ${dynCount}</button>`;
+        dynContainer.appendChild(newDiv);
+        const btn = newDiv.querySelector(".dyn-btn");
+        if (btn) {
+          btn.addEventListener("click", () => {
+            btn.innerText = "Triggered!";
+            btn.style.backgroundColor = "#2e7d32";
+          });
+        }
+      });
+    }
   </script>
 </body>
 </html>
