@@ -148,6 +148,19 @@
       </div>
     </div>
 
+    <!-- Section 23: Evaluation & Safety Benchmark Telemetry -->
+    <div style="margin-top: 8px; padding-top: 6px; border-top: 1px dashed #90caf9; font-size: 11px;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <strong style="color: #0d47a1;">Evaluation &amp; Safety Benchmark:</strong>
+        <span id="evalZeroViolationBadge" style="background: #e8f5e9; color: #166534; padding: 1px 5px; border-radius: 3px; font-weight: bold; font-size: 9px; border: 1px solid #bbf7d0;">0 UNAUTHORIZED ACTIONS</span>
+      </div>
+      <div id="evalMetricsPanel" style="font-family: monospace; font-size: 9.5px; margin-top: 4px; background: #ffffff; padding: 6px; border: 1px solid #bbdefb; border-radius: 4px; line-height: 1.4;">
+        <div>Tasks: <span id="evalTasksCount">0/0</span> | Actions: <span id="evalActionsCount">0/0</span> | Conf: <span id="evalGroundingConf">-</span></div>
+        <div>Verification: <span id="evalVerifRate">-</span> | Recoveries: <span id="evalRecoveryCount">0</span> | Replans: <span id="evalReplanCount">0</span></div>
+        <div style="color: #166534; font-weight: bold; margin-top: 2px;">Consequential Safety: <span id="evalSafetyStatus">PASSED (0 Violations)</span></div>
+      </div>
+    </div>
+
     <!-- Local vs External Data Boundary Architecture Summary -->
     <div style="margin-top: 8px; padding-top: 6px; border-top: 1px dashed #90caf9; font-size: 11px;">
       <strong style="color: #0d47a1;">Data Boundary Architecture:</strong>
@@ -269,6 +282,7 @@
   <script src="change-detector.js"></script>
   <script src="task-parser.js"></script>
   <script src="reasoning-planner.js"></script>
+  <script src="evaluation-tracker.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

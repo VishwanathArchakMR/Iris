@@ -828,9 +828,12 @@ function classifyVisualElement(el, fieldId = null) {
   const semanticTag = getSemanticTag(type, label, el);
   const descriptor = {
     type: type,
+    role: elRole || (["button", "link"].includes(type) ? type : (isFormField ? "textbox" : null)),
     label: label,
+    text: label,
     semanticTag: semanticTag,
-    role: elRole || null,
+    visible: true,
+    enabled: !isDisabled,
     disabled: isDisabled,
     placeholder: (el.getAttribute ? el.getAttribute("placeholder") : null) || null,
     ariaLabel: (el.getAttribute ? el.getAttribute("aria-label") : null) || null,
@@ -840,7 +843,16 @@ function classifyVisualElement(el, fieldId = null) {
     x: Math.round(rect.x),
     y: Math.round(rect.y),
     width: Math.round(rect.width),
-    height: Math.round(rect.height)
+    height: Math.round(rect.height),
+    bounds: {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    },
+    index: typeof fieldId === "number" ? fieldId : null,
+    confidence: 1.0,
+    evidence: `Local DOM: tag=${tagName}, role=${elRole || "none"}, semanticTag=${semanticTag || "none"}`
   };
 
   if (isFormField && typeof fieldId === "number") {
@@ -871,6 +883,7 @@ function extractVisualElements() {
     const fieldId = isFormField ? formFieldCounter++ : null;
     const item = classifyVisualElement(el, fieldId);
     if (item) {
+      item.index = visualElements.length;
       visualElements.push(item);
     }
   });
@@ -898,6 +911,7 @@ function extractVisualElementsWithNodes() {
     const fieldId = isFormField ? formFieldCounter++ : null;
     const item = classifyVisualElement(el, fieldId);
     if (item) {
+      item.index = visualElementsWithNodes.length;
       visualElementsWithNodes.push({
         ...item,
         node: el

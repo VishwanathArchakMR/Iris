@@ -101,6 +101,18 @@
   }
 
   /**
+   * Identifies ambiguous pronouns or referential placeholder terms that must never
+   * be executed as independent click targets without contextual resolution.
+   *
+   * @param {string} str
+   * @returns {boolean}
+   */
+  function isPronounOrReference(str) {
+    const s = (str || "").toLowerCase().trim();
+    return /^(?:it|this|that|them|that\s+button|this\s+button|the\s+button|button|that\s+link|this\s+link|the\s+link|link|the\s+above|above|the\s+field|that\s+field|this\s+field|field)$/i.test(s);
+  }
+
+  /**
    * Normalizes natural language idioms, connectors, and pronoun references in task text.
    * Ensures phrases like "find [the] <target> and/then click it" are interpreted as
    * a single click intent, avoiding spurious "click it" steps.
@@ -112,19 +124,19 @@
     let text = normalizeText(rawTask);
     if (!text) return "";
 
-    // 1. Normalize "find/locate/search for/look for [the] <TARGET> and/then/and then click/press/tap/select/use it/that/this/them/that button"
+    // 1. Normalize "find/locate/search for/look for [the] <TARGET> and/then/and then click/press/tap/select/use it/that/this/them/that button/that link/the above"
     // -> "click [the] <TARGET>"
     text = text.replace(
-      /\b(?:find|locate|search\s+for|look\s+for)\s+(?:the\s+)?([a-zA-Z0-9_\-\s]+?)\s*(?:,\s*|\s+)(?:and\s+then\s+|and\s+|then\s+)(?:click|press|tap|select|use)\s+(?:on\s+)?(?:it|that|this|them|that\s+button|this\s+button)\b/gi,
+      /\b(?:find|locate|search\s+for|look\s+for)\s+(?:the\s+)?([a-zA-Z0-9_\-\s]+?)\s*(?:,\s*|\s+)(?:and\s+then\s+|and\s+|then\s+)(?:click|press|tap|select|use)\s+(?:on\s+)?(?:it|that|this|them|that\s+button|this\s+button|that\s+link|this\s+link|the\s+above|above|the\s+field|that\s+field|this\s+field)\b/gi,
       (match, target) => {
         const cleanTarget = target.trim();
         return `click ${cleanTarget}`;
       }
     );
 
-    // 2. Normalize "find/locate/search for/look for [the] <TARGET> button/link and/then click/press/tap/select/use it"
+    // 2. Normalize "find/locate/search for/look for [the] <TARGET> button/link and/then click/press/tap/select/use it/that/that link/the above"
     text = text.replace(
-      /\b(?:find|locate|search\s+for|look\s+for)\s+(?:the\s+)?([a-zA-Z0-9_\-\s]+?)\s+(?:button|link)\s*(?:,\s*|\s+)(?:and\s+then\s+|and\s+|then\s+)(?:click|press|tap|select|use)\s+(?:on\s+)?(?:it|that|this|them|that\s+button|this\s+button)\b/gi,
+      /\b(?:find|locate|search\s+for|look\s+for)\s+(?:the\s+)?([a-zA-Z0-9_\-\s]+?)\s+(?:button|link)\s*(?:,\s*|\s+)(?:and\s+then\s+|and\s+|then\s+)(?:click|press|tap|select|use)\s+(?:on\s+)?(?:it|that|this|them|that\s+button|this\s+button|that\s+link|this\s+link|the\s+above|above|the\s+field|that\s+field|this\s+field)\b/gi,
       (match, target) => {
         const cleanTarget = target.trim();
         return `click ${cleanTarget} button`;
@@ -133,7 +145,7 @@
 
     // 3. Normalize "[the] <TARGET> [button/link] and then click/press/tap/select/use it" or ", then click it" when preceded by a clickable target
     text = text.replace(
-      /(?:(?:the\s+)?([a-zA-Z0-9_\-]+(?:\s+button|\s+link)?))\s*(?:,\s*|\s+)(?:and\s+then\s+|and\s+|then\s+)(?:click|press|tap|select|use)\s+(?:on\s+)?(?:it|that|this|them|that\s+button|this\s+button)\b/gi,
+      /(?:(?:the\s+)?([a-zA-Z0-9_\-]+(?:\s+button|\s+link)?))\s*(?:,\s*|\s+)(?:and\s+then\s+|and\s+|then\s+)(?:click|press|tap|select|use)\s+(?:on\s+)?(?:it|that|this|them|that\s+button|this\s+button|that\s+link|this\s+link|the\s+above|above|the\s+field|that\s+field|this\s+field)\b/gi,
       (match, target) => {
         const cleanTarget = (target || "").trim();
         if (/^(?:fill|enter|type|put|set|is|as|with|in|into|then|and)$/i.test(cleanTarget)) {
@@ -176,7 +188,7 @@
       const secondPart = sequentialSplit.slice(1).join(" then ").trim();
 
       // Check if secondPart is just pronoun referral like "click it", "press it", "tap it", "select it", "use that button"
-      if (/^(?:click|press|tap|select|use)\s+(?:on\s+)?(?:it|this|that|them|that\s+button|this\s+button)$/i.test(secondPart)) {
+      if (isPronounOrReference(secondPart) || /^(?:click|press|tap|select|use)\s+(?:on\s+)?(?:it|this|that|them|that\s+button|this\s+button|that\s+link|this\s+link|the\s+above|above|the\s+field|that\s+field|this\s+field|the\s+button|button|the\s+link|link)$/i.test(secondPart)) {
         const firstResult = parseTask(firstPart);
         if (firstResult.intent !== "NONE" && Array.isArray(firstResult.steps) && firstResult.steps.length > 0) {
           const lastStep = firstResult.steps[firstResult.steps.length - 1];
@@ -222,7 +234,7 @@
         const trimmedClause = clause.trim();
 
         // Check if this clause is a pronoun referral like "click it", "then click it", "and click it", "select it"
-        if (/^(?:and\s+)?(?:then\s+)?(?:click|press|tap|select|use)\s+(?:on\s+)?(?:it|this|that|them|that\s+button|this\s+button)$/i.test(trimmedClause)) {
+        if (isPronounOrReference(trimmedClause) || /^(?:and\s+)?(?:then\s+)?(?:click|press|tap|select|use)\s+(?:on\s+)?(?:it|this|that|them|that\s+button|this\s+button|that\s+link|this\s+link|the\s+above|above|the\s+field|that\s+field|this\s+field|the\s+button|button|the\s+link|link)$/i.test(trimmedClause)) {
           if (parsedClauses.length > 0) {
             const lastStep = parsedClauses[parsedClauses.length - 1];
             // If the preceding step was already a CLICK action, "click it" is redundant confirmation
@@ -274,8 +286,8 @@
       ]);
     }
 
-    // 5b. General scroll: "scroll down", "scroll", "scroll down a bit", "scroll to find the form"
-    if (/^scroll(?:\s+down)?(?:\s+a\s+bit|\s+more|\s+page)?$/i.test(lower) || /^(?:view|read)\s+more$/i.test(lower) || /^scroll\s+to\s+/i.test(lower)) {
+    // 5b. General scroll: "scroll down", "scroll", "scroll down the page", "scroll down a bit", "scroll to find the form"
+    if (/^scroll(?:\s+down|\s+up)?(?:\s+a\s+bit|\s+more|\s+the\s+page|\s+page)?$/i.test(lower) || /^(?:view|read)\s+more$/i.test(lower) || /^scroll\s+to\s+/i.test(lower)) {
       return buildResultFromSteps([
         {
           type: "SCROLL",
@@ -305,7 +317,7 @@
     const labelledBtnMatch = task.match(/^(?:click|press|tap)\s+(?:on\s+)?(?:the\s+)?(?:button|link)\s+(?:labelled|labeled|named|with\s+text)\s+['"]?([a-zA-Z0-9_\-\s]+?)['"]?$/i);
     if (labelledBtnMatch) {
       const targetHint = labelledBtnMatch[1].trim();
-      if (/^(?:it|this|that|them|that\s+button|this\s+button)$/i.test(targetHint)) {
+      if (isPronounOrReference(targetHint)) {
         return createNoneResult("Cannot resolve pronoun target '" + targetHint + "' without prior clickable context");
       }
       return buildResultFromSteps([
@@ -321,7 +333,7 @@
     const openMatch = task.match(/^(?:open|navigate\s+to|go\s+to)\s+(?:the\s+)?([a-zA-Z0-9_\-\s]+?)(?:\s+page|\s+link|\s+tab)?$/i);
     if (openMatch) {
       const targetHint = openMatch[1].trim();
-      if (/^(?:it|this|that|them|that\s+button|this\s+button)$/i.test(targetHint)) {
+      if (isPronounOrReference(targetHint)) {
         return createNoneResult("Cannot resolve pronoun target '" + targetHint + "' without prior clickable context");
       }
       return buildResultFromSteps([
@@ -337,8 +349,8 @@
     const clickMatch = task.match(/^(?:click|press|tap)\s+(?:on\s+)?(?:the\s+)?([a-zA-Z0-9_\-\s]+?)(?:\s+button|\s+link)?$/i);
     if (clickMatch) {
       const targetHint = clickMatch[1].trim();
-      // Never create a standalone target named "it", "this", "that", "them"
-      if (/^(?:it|this|that|them|that\s+button|this\s+button)$/i.test(targetHint)) {
+      // Never create a standalone target named "it", "this", "that", "them", "the button", "the above", etc.
+      if (isPronounOrReference(targetHint)) {
         return createNoneResult("Cannot resolve pronoun target '" + targetHint + "' without prior clickable context");
       }
       return buildResultFromSteps([

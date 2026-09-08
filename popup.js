@@ -880,24 +880,69 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   };
 
-  // Milestone 14 Helper: Render Execution Trace History into popup UI
+  // Milestone 14 & Final Architecture: Render Explainable Agent Trace (Section 22) + Evaluation Telemetry (Section 23)
   const renderTraceHistory = () => {
-    if (!agentTraceContainer) return;
-    if (!executionTraceHistory || executionTraceHistory.length === 0) {
-      agentTraceContainer.innerHTML = "<div style='color: #666; font-style: italic;'>No trace recorded yet.</div>";
-      return;
+    if (agentTraceContainer) {
+      if (!executionTraceHistory || executionTraceHistory.length === 0) {
+        agentTraceContainer.innerHTML = "<div style='color: #666; font-style: italic;'>No trace recorded yet.</div>";
+      } else {
+        let html = "";
+        executionTraceHistory.forEach((t) => {
+          const execColor = t.executed ? "#166534" : (t.status === "completed" ? "#1565c0" : "#b91c1c");
+          const riskColor = (t.risk === "HIGH" || t.risk === "CRITICAL") ? "#b91c1c" : ((t.risk === "MEDIUM") ? "#b45309" : "#3730a3");
+          const riskBg = (t.risk === "HIGH" || t.risk === "CRITICAL") ? "#fee2e2" : ((t.risk === "MEDIUM") ? "#fef3c7" : "#e0e7ff");
+
+          html += `<div style="border: 1px solid #e2e8f0; border-radius: 4px; padding: 5px 6px; margin-bottom: 5px; background: #ffffff; box-shadow: 0 1px 2px rgba(0,0,0,0.03);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
+              <span style="font-weight: bold; color: #1565c0; font-size: 10.5px;">STEP ${t.step} / ${t.totalSteps || 1}</span>
+              <span style="font-size: 8.5px; padding: 1px 4px; border-radius: 3px; font-weight: bold; background: ${riskBg}; color: ${riskColor};">[${t.risk || "LOW"}]</span>
+            </div>
+            <div style="font-size: 9.5px; color: #334155; line-height: 1.35;">
+              <div><strong>PERCEPTION:</strong> ${escapeHtml(t.perception || "DOM perception active")}</div>
+              <div><strong>GROUNDING:</strong> ${escapeHtml(t.groundingStr || "Target matched")}</div>
+              <div><strong>SAFETY:</strong> <span style="color: ${t.safetyDecision && t.safetyDecision.startsWith('BLOCKED') ? '#dc2626' : '#166534'}; font-weight: bold;">${escapeHtml(t.safetyDecision || "ALLOWED")}</span> (Approval: ${escapeHtml(t.humanApproval || "NOT REQUIRED")})</div>
+              <div><strong>ACTION:</strong> <strong>${escapeHtml(t.action?.action || "NONE")}</strong> &rarr; ${escapeHtml(t.action?.targetLabel || t.action?.target || "None")}${t.action?.amount ? " (" + t.action.amount + ")" : ""}</div>
+              <div><strong>RESULT:</strong> <span style="color: ${execColor}; font-weight: bold;">${escapeHtml(t.executionResult)}</span></div>
+              ${t.verification ? `<div><strong>VERIFICATION:</strong> ${escapeHtml(t.verification)}</div>` : ""}
+              ${t.recovery ? `<div style="color: #0369a1; font-weight: bold;"><strong>RECOVERY:</strong> ${escapeHtml(t.recovery)}</div>` : ""}
+            </div>
+          </div>`;
+        });
+        agentTraceContainer.innerHTML = html;
+        agentTraceContainer.scrollTop = agentTraceContainer.scrollHeight;
+      }
     }
-    let html = "";
-    executionTraceHistory.forEach((t) => {
-      const execColor = t.executed ? "#2e7d32" : (t.status === "completed" ? "#1565c0" : "#c62828");
-      html += `<div style="border-bottom: 1px solid #e3f2fd; padding: 4px 0; margin-bottom: 3px;">
-        <span style="font-weight: bold; color: #1565c0;">Step ${t.step}</span> [${t.requestId}]:
-        <strong>${t.action?.action || "NONE"}</strong> &rarr; ${t.action?.target || "None"}${t.action?.amount ? " (" + t.action.amount + ")" : ""}
-        <br/><span style="color: ${execColor}; font-weight: bold;">${t.executionResult}</span>
-        ${t.verification ? `<br/><span style="color: #444; font-size: 9.5px;">Verification: ${t.verification}</span>` : ""}
-      </div>`;
-    });
-    agentTraceContainer.innerHTML = html;
+
+    // Update Section 23 Evaluation & Safety Benchmark Telemetry
+    if (window.SIHEvaluationTracker && typeof window.SIHEvaluationTracker.getSummary === "function") {
+      const summary = window.SIHEvaluationTracker.getSummary();
+      const evalTasksCount = document.getElementById("evalTasksCount");
+      const evalActionsCount = document.getElementById("evalActionsCount");
+      const evalGroundingConf = document.getElementById("evalGroundingConf");
+      const evalVerifRate = document.getElementById("evalVerifRate");
+      const evalRecoveryCount = document.getElementById("evalRecoveryCount");
+      const evalReplanCount = document.getElementById("evalReplanCount");
+      const evalSafetyStatus = document.getElementById("evalSafetyStatus");
+      const evalZeroViolationBadge = document.getElementById("evalZeroViolationBadge");
+
+      if (evalTasksCount) evalTasksCount.textContent = `${summary.tasksSucceeded}/${summary.tasksAttempted}`;
+      if (evalActionsCount) evalActionsCount.textContent = `${summary.actionsExecuted}/${summary.actionsAttempted}`;
+      if (evalGroundingConf) evalGroundingConf.textContent = summary.avgGroundingConfidence ? `${(summary.avgGroundingConfidence * 100).toFixed(0)}%` : "-";
+      if (evalVerifRate) evalVerifRate.textContent = summary.verificationSuccessRate ? `${(summary.verificationSuccessRate * 100).toFixed(0)}%` : "-";
+      if (evalRecoveryCount) evalRecoveryCount.textContent = String(summary.recoveryCount);
+      if (evalReplanCount) evalReplanCount.textContent = String(summary.replanningCount);
+      if (evalSafetyStatus) {
+        evalSafetyStatus.textContent = summary.isZeroUnauthorizedConsequential
+          ? `PASSED (0 Violations, ${summary.blockedConsequentialActions} Gated)`
+          : `VIOLATION (${summary.unauthorizedConsequentialActions} unauthorized)`;
+        evalSafetyStatus.style.color = summary.isZeroUnauthorizedConsequential ? "#166534" : "#dc2626";
+      }
+      if (evalZeroViolationBadge) {
+        evalZeroViolationBadge.textContent = `${summary.unauthorizedConsequentialActions} UNAUTHORIZED ACTIONS`;
+        evalZeroViolationBadge.style.background = summary.isZeroUnauthorizedConsequential ? "#e8f5e9" : "#fee2e2";
+        evalZeroViolationBadge.style.color = summary.isZeroUnauthorizedConsequential ? "#166534" : "#dc2626";
+      }
+    }
   };
 
   // =====================================================================
@@ -1021,9 +1066,14 @@ document.addEventListener("DOMContentLoaded", () => {
           fieldValuesPrivacyNotice.textContent = "Kept local (not sent)";
         }
 
+        if (window.SIHEvaluationTracker && typeof window.SIHEvaluationTracker.recordTaskStart === "function") {
+          window.SIHEvaluationTracker.recordTaskStart(currentRequestId, task);
+        }
+
         while (currentStep <= (isPlannedTask ? totalPlannedSteps : MAX_AGENT_STEPS)) {
           const requestId = "SIH-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
           currentRequestId = requestId;
+          let stepRecoveryNote = null;
           resetPipelineState();
 
         // Update step & verification indicators
@@ -1339,11 +1389,47 @@ document.addEventListener("DOMContentLoaded", () => {
                   groundingMethod: "local-fuzzy-match"
                 };
               } else {
-                agentAction = {
-                  action: "NONE",
-                  target: null,
-                  reason: `Could not safely ground form field '${currentStepPlan.fieldHint}' on DOM.`
-                };
+                // Section 5 Bounded Recovery: Live DOM re-perception before falling back
+                const recoveryPage = await new Promise((r) => {
+                  setTimeout(() => {
+                    chrome.tabs.sendMessage(tab.id, { action: "getPageInfo" }, (resp) => r(resp || null));
+                  }, 250);
+                });
+                if (recoveryPage && Array.isArray(recoveryPage.visualElements)) {
+                  latestVisualElements = recoveryPage.visualElements;
+                  (latestVisualElements || []).forEach((el, idx) => {
+                    if (!FORM_TYPES.has((el.type || "").toLowerCase())) return;
+                    const labelNorm = normalize(el.label);
+                    let score = 0;
+                    if (labelNorm === targetHintNorm) score = 1.0;
+                    else if (labelNorm.includes(targetHintNorm) || targetHintNorm.includes(labelNorm)) score = 0.8;
+                    if (score > bestScore) {
+                      bestScore = score;
+                      bestIdx = idx;
+                    }
+                  });
+                  if (bestIdx >= 0 && bestScore >= 0.35) {
+                    const matchedEl = latestVisualElements[bestIdx];
+                    stepRecoveryNote = "Recovered form field target after live DOM re-perception";
+                    if (window.SIHEvaluationTracker) window.SIHEvaluationTracker.recordRecovery(stepRecoveryNote);
+                    agentAction = {
+                      action: "FILL",
+                      targetIndex: bestIdx,
+                      targetType: matchedEl.type,
+                      targetLabel: matchedEl.label,
+                      groundingScore: bestScore,
+                      groundingMethod: "bounded-recovery-match"
+                    };
+                  }
+                }
+
+                if (!agentAction || agentAction.action !== "FILL") {
+                  agentAction = {
+                    action: "NONE",
+                    target: null,
+                    reason: `Could not safely ground form field '${currentStepPlan.fieldHint}' on DOM.`
+                  };
+                }
               }
             }
           } else if (plannedType === "CLICK") {
@@ -1380,19 +1466,59 @@ document.addEventListener("DOMContentLoaded", () => {
                   groundingScore: bestScore,
                   groundingMethod: "local-fuzzy-match"
                 };
-              } else if (!isCompatibleClick) {
-                if (currentStepPlan.legacyTarget) {
-                  agentAction = {
-                    action: "CLICK",
-                    target: currentStepPlan.legacyTarget,
-                    groundingMethod: "keyword-rule"
-                  };
-                } else {
-                  agentAction = {
-                    action: "NONE",
-                    target: null,
-                    reason: `Could not safely ground click target '${currentStepPlan.targetHint}' on DOM.`
-                  };
+              } else {
+                // Section 5 Bounded Recovery: Live DOM re-perception before falling back
+                const recoveryPage = await new Promise((r) => {
+                  setTimeout(() => {
+                    chrome.tabs.sendMessage(tab.id, { action: "getPageInfo" }, (resp) => r(resp || null));
+                  }, 250);
+                });
+                if (recoveryPage && Array.isArray(recoveryPage.visualElements)) {
+                  latestVisualElements = recoveryPage.visualElements;
+                  (latestVisualElements || []).forEach((el, idx) => {
+                    if (el.disabled || String(el["aria-disabled"]).toLowerCase() === "true") return;
+                    const elType = (el.type || "").toLowerCase();
+                    if (!["button", "link", "input", "element"].includes(elType)) return;
+                    const labelNorm = normalize(el.label);
+                    let score = 0;
+                    if (labelNorm === targetHintNorm) score = 1.0;
+                    else if (labelNorm.includes(targetHintNorm) || (targetHintNorm && targetHintNorm.includes(labelNorm))) score = 0.8;
+                    else if (targetHintNorm === "submit" && (labelNorm.includes("submit") || labelNorm.includes("send") || el.semanticTag === "SUBMIT_BUTTON")) score = 0.9;
+                    if (score > bestScore) {
+                      bestScore = score;
+                      bestIdx = idx;
+                    }
+                  });
+                  if (bestIdx >= 0 && bestScore >= 0.35) {
+                    const matchedEl = latestVisualElements[bestIdx];
+                    stepRecoveryNote = "Recovered click target after live DOM re-perception";
+                    if (window.SIHEvaluationTracker) window.SIHEvaluationTracker.recordRecovery(stepRecoveryNote);
+                    agentAction = {
+                      action: "CLICK",
+                      target: matchedEl.label,
+                      targetIndex: bestIdx,
+                      targetType: matchedEl.type,
+                      targetLabel: matchedEl.label,
+                      groundingScore: bestScore,
+                      groundingMethod: "bounded-recovery-match"
+                    };
+                  }
+                }
+
+                if (!agentAction || agentAction.action !== "CLICK") {
+                  if (currentStepPlan.legacyTarget) {
+                    agentAction = {
+                      action: "CLICK",
+                      target: currentStepPlan.legacyTarget,
+                      groundingMethod: "keyword-rule"
+                    };
+                  } else {
+                    agentAction = {
+                      action: "NONE",
+                      target: null,
+                      reason: `Could not safely ground click target '${currentStepPlan.targetHint}' on DOM.`
+                    };
+                  }
                 }
               }
             }
@@ -1975,15 +2101,38 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         }
 
-        // Record trace for this step
+        // Record evaluation metrics (Section 23)
+        if (window.SIHEvaluationTracker) {
+          window.SIHEvaluationTracker.recordAction({
+            action: agentAction.action,
+            target: targetStr,
+            groundingScore: agentAction.groundingScore,
+            executed: actionExecutedSuccessfully,
+            risk: safetyGate.risk
+          });
+          const isCh = !!(currentSignature && postActionSignature && window.SIHChangeDetector &&
+            window.SIHChangeDetector.compareScreenSignatures(currentSignature, postActionSignature, PIXEL_CHANGE_THRESHOLD).changed);
+          window.SIHEvaluationTracker.recordVerification(isCh, verificationResultStr);
+        }
+
+        // Record explainable trace for this step (Section 22)
         executionTraceHistory.push({
           step: currentStep,
+          totalSteps: isPlannedTask ? totalPlannedSteps : MAX_AGENT_STEPS,
           requestId,
           action: agentAction,
           executed: true,
           status: "success",
+          perception: (latestVisualElements && latestVisualElements.length > 0)
+            ? `${latestVisualElements.length} visual elements perceived locally`
+            : "DOM perception active",
+          groundingStr: `Label='${agentAction.targetLabel || agentAction.target || "none"}', Role=${agentAction.targetType || "element"}, Conf=${agentAction.groundingScore !== undefined ? agentAction.groundingScore : 1.0}`,
+          risk: safetyGate.risk || "LOW",
+          safetyDecision: safetyGate.allowed ? (safetyGate.requiresApproval ? "APPROVED" : "ALLOWED") : "BLOCKED",
+          humanApproval: safetyGate.requiresApproval ? "GRANTED" : "NOT REQUIRED",
           executionResult: actionExecutionSummary,
-          verification: verificationResultStr
+          verification: verificationResultStr,
+          recovery: stepRecoveryNote
         });
         renderTraceHistory();
 
@@ -2012,6 +2161,13 @@ document.addEventListener("DOMContentLoaded", () => {
         const allCompleted = reasoningPlan.steps.every((s) => s.completed || s.verified);
         if (allCompleted) {
           appendPlannerTrace("All requested form fields and actions verified. Task complete.");
+        }
+        if (window.SIHEvaluationTracker) {
+          window.SIHEvaluationTracker.recordTaskEnd(currentRequestId, allCompleted);
+        }
+      } else {
+        if (window.SIHEvaluationTracker) {
+          window.SIHEvaluationTracker.recordTaskEnd(currentRequestId, true);
         }
       }
     } catch (err) {

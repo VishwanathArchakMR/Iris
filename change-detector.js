@@ -152,18 +152,28 @@ function computeHammingDistance(hashA = "", hashB = "") {
   return dist;
 }
 
+// Meaningful Change Classification Levels
+const CHANGE_LEVELS = Object.freeze({
+  NO_CHANGE: "NO_CHANGE",
+  MINOR_CHANGE: "MINOR_CHANGE",
+  MEANINGFUL_CHANGE: "MEANINGFUL_CHANGE",
+  MAJOR_CHANGE: "MAJOR_CHANGE"
+});
+
 /**
  * Compares two screen signatures to determine if a meaningful visual or DOM change occurred.
+ * Classifies changes into: NO_CHANGE, MINOR_CHANGE, MEANINGFUL_CHANGE, MAJOR_CHANGE.
  *
  * @param {Object|null} prev - Previous screen signature
  * @param {Object|null} current - Current screen signature
  * @param {number} pixelThreshold - Configurable Hamming distance threshold
- * @returns {Object} { changed: boolean, reason: string, pixelDiff: number, domDiff: boolean }
+ * @returns {Object} { changed: boolean, changeLevel: string, reason: string, pixelDiff: number, domDiff: boolean }
  */
 function compareScreenSignatures(prev, current, pixelThreshold = PIXEL_CHANGE_THRESHOLD) {
   if (!prev || !current) {
     return {
       changed: true,
+      changeLevel: CHANGE_LEVELS.MAJOR_CHANGE,
       reason: "Initial observation (no previous signature)",
       pixelDiff: 0,
       domDiff: false
@@ -174,39 +184,65 @@ function compareScreenSignatures(prev, current, pixelThreshold = PIXEL_CHANGE_TH
   const countDiff = current.elementCount !== prev.elementCount;
   const domDiff = current.domSignature !== prev.domSignature;
 
-  // 1. Structural DOM count change (e.g. modal appeared, elements added/removed)
+  // 1. Structural DOM count change (e.g. modal appeared, elements added/removed) -> MAJOR_CHANGE
   if (countDiff) {
     return {
       changed: true,
+      changeLevel: CHANGE_LEVELS.MAJOR_CHANGE,
       reason: `DOM structure changed (element count ${prev.elementCount} -> ${current.elementCount})`,
       pixelDiff,
       domDiff: true
     };
   }
 
-  // 2. Structural DOM content change (e.g. text or labels changed while count remained equal)
+  // 2. Large visual shift (>= 100 bits) -> MAJOR_CHANGE
+  if (pixelDiff >= 100) {
+    return {
+      changed: true,
+      changeLevel: CHANGE_LEVELS.MAJOR_CHANGE,
+      reason: `Major visual shift (${pixelDiff} bits changed >= 100)`,
+      pixelDiff,
+      domDiff
+    };
+  }
+
+  // 3. Structural DOM content change (e.g. text or labels changed while count remained equal) -> MEANINGFUL_CHANGE
   if (domDiff) {
     return {
       changed: true,
+      changeLevel: CHANGE_LEVELS.MEANINGFUL_CHANGE,
       reason: `DOM element labels changed (signature ${prev.domSignature} -> ${current.domSignature})`,
       pixelDiff,
       domDiff: true
     };
   }
 
-  // 3. Perceptual pixel change exceeding threshold (e.g. button color changed, scroll occurred)
+  // 4. Perceptual pixel change exceeding threshold -> MEANINGFUL_CHANGE
   if (pixelDiff >= pixelThreshold) {
     return {
       changed: true,
+      changeLevel: CHANGE_LEVELS.MEANINGFUL_CHANGE,
       reason: `Visual difference exceeded threshold (${pixelDiff} bits changed >= ${pixelThreshold})`,
       pixelDiff,
       domDiff: false
     };
   }
 
-  // 4. No meaningful change detected
+  // 5. Minor perceptual difference (< threshold but > 5) -> MINOR_CHANGE
+  if (pixelDiff > 5) {
+    return {
+      changed: false,
+      changeLevel: CHANGE_LEVELS.MINOR_CHANGE,
+      reason: `Minor sub-threshold pixel fluctuation (${pixelDiff} bits changed < ${pixelThreshold})`,
+      pixelDiff,
+      domDiff: false
+    };
+  }
+
+  // 6. No meaningful change detected -> NO_CHANGE
   return {
     changed: false,
+    changeLevel: CHANGE_LEVELS.NO_CHANGE,
     reason: `No meaningful change detected (${pixelDiff} bits changed < ${pixelThreshold})`,
     pixelDiff,
     domDiff: false
@@ -219,7 +255,8 @@ if (typeof window !== "undefined") {
     compareScreenSignatures,
     computeHammingDistance,
     hashString,
-    PIXEL_CHANGE_THRESHOLD
+    PIXEL_CHANGE_THRESHOLD,
+    CHANGE_LEVELS
   };
 }
 
@@ -229,6 +266,7 @@ if (typeof module !== "undefined" && module.exports) {
     compareScreenSignatures,
     computeHammingDistance,
     hashString,
-    PIXEL_CHANGE_THRESHOLD
+    PIXEL_CHANGE_THRESHOLD,
+    CHANGE_LEVELS
   };
 }
