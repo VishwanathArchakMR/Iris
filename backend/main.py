@@ -397,10 +397,13 @@ class DemoAgentProvider:
                 }, reasoning
 
         # Signal 1: Explicit Legacy Semantic Tag signals (Milestone 14 / Milestone 15)
+        def _is_enabled(e):
+            return not e.get("disabled") and str(e.get("aria-disabled", "")).lower() != "true"
+
         # 1a. Login
         if any(keyword in task_lower for keyword in ["login", "log in", "sign in"]):
             button_found = any(
-                str(el.get("semanticTag", "")).upper() == "LOGIN_BUTTON"
+                str(el.get("semanticTag", "")).upper() == "LOGIN_BUTTON" and _is_enabled(el)
                 for el in elements
             )
             if button_found:
@@ -413,7 +416,7 @@ class DemoAgentProvider:
         # 1b. Next / Continue
         if any(keyword in task_lower for keyword in ["next", "continue", "proceed", "step"]):
             button_found = any(
-                str(el.get("semanticTag", "")).upper() == "NEXT_BUTTON"
+                str(el.get("semanticTag", "")).upper() == "NEXT_BUTTON" and _is_enabled(el)
                 for el in elements
             )
             if button_found:
@@ -426,7 +429,7 @@ class DemoAgentProvider:
         # 1c. Search Input
         if any(keyword in task_lower for keyword in ["search", "query", "find input"]):
             input_found = any(
-                str(el.get("semanticTag", "")).upper() == "SEARCH_INPUT"
+                str(el.get("semanticTag", "")).upper() == "SEARCH_INPUT" and _is_enabled(el)
                 for el in elements
             )
             if input_found:
@@ -440,8 +443,10 @@ class DemoAgentProvider:
         if any(keyword in task_lower for keyword in ["find the submit", "submit button and click", "submit form", "click submit", "submit"]):
             matching_submits = [
                 el for el in elements
-                if str(el.get("semanticTag", "")).upper() == "SUBMIT_BUTTON" or
-                (str(el.get("type", "")).lower() in {"button", "link"} and "submit" in str(el.get("label", "")).lower())
+                if _is_enabled(el) and (
+                    str(el.get("semanticTag", "")).upper() == "SUBMIT_BUTTON" or
+                    (str(el.get("type", "")).lower() in {"button", "link"} and "submit" in str(el.get("label", "")).lower())
+                )
             ]
             if len(matching_submits) == 1 and any(phrase in task_lower for phrase in ["find the submit button and click it", "click submit", "submit", "submit form", "submit button"]):
                 reasoning = (

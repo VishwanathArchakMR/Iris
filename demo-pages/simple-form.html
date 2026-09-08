@@ -104,6 +104,11 @@
         <input type="tel" id="phone" name="phone" placeholder="Phone number" required autocomplete="off" />
       </div>
 
+      <div class="form-group">
+        <label for="comments">Comments</label>
+        <textarea id="comments" name="comments" placeholder="Your feedback or comments" rows="3" style="width: 100%; padding: 10px 12px; font-size: 14px; border: 1px solid #cbd5e1; border-radius: 6px; font-family: inherit;" autocomplete="off"></textarea>
+      </div>
+
       <button type="submit" id="btnSubmit" class="btn-submit">Submit Form</button>
     </form>
 
@@ -116,6 +121,7 @@
       const email = document.getElementById("email").value;
       const address = document.getElementById("address").value;
       const phone = document.getElementById("phone").value;
+      const comments = document.getElementById("comments").value;
       const statusDiv = document.getElementById("submitStatus");
       statusDiv.className = "success";
       statusDiv.textContent = `Form submitted successfully for ${name} (${email})!`;

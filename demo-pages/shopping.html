@@ -153,6 +153,17 @@
     </div>
   </div>
 
+  <div class="checkout-section" style="max-width: 960px; margin: 24px auto 0 auto; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 20px; display: flex; justify-content: space-between; align-items: center;">
+    <div>
+      <div style="font-weight: 700; font-size: 15px; color: #1e293b;">Order Summary &amp; Checkout</div>
+      <div style="font-size: 13px; color: #64748b;">Consequential actions like Checkout and Purchase require human confirmation.</div>
+    </div>
+    <div style="display: flex; gap: 10px;">
+      <button class="btn-details" id="btnCheckout" onclick="proceedToCheckout()" style="padding: 10px 18px;">Checkout</button>
+      <button class="btn-add-cart" id="btnPurchase" onclick="executePurchase()" style="background: #059669; padding: 10px 18px;">Purchase Now</button>
+    </div>
+  </div>
+
   <div id="notification"></div>
 
   <script>
@@ -167,6 +178,16 @@
     function viewDetails(item) {
       const notif = document.getElementById("notification");
       notif.textContent = `Viewing details for: ${item}`;
+      notif.style.display = "block";
+    }
+    function proceedToCheckout() {
+      const notif = document.getElementById("notification");
+      notif.textContent = `Proceeding to Checkout with ${count} items.`;
+      notif.style.display = "block";
+    }
+    function executePurchase() {
+      const notif = document.getElementById("notification");
+      notif.textContent = `Order placed successfully! Purchase authorized for $1,299.00.`;
       notif.style.display = "block";
     }
   </script>

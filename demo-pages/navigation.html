@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Navigation Center - SIH26171 Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #f8fafc;
+      color: #0f172a;
+      padding: 40px 20px;
+    }
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 28px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+    }
+    h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+    p.subtitle { font-size: 13px; color: #64748b; margin-bottom: 24px; }
+    .nav-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .nav-link {
+      display: inline-block;
+      padding: 8px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      color: #2563eb;
+      text-decoration: none;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 6px;
+      transition: all 0.15s ease;
+      cursor: pointer;
+    }
+    .nav-link:hover {
+      background: #2563eb;
+      color: #ffffff;
+    }
+    .section-card {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 18px;
+      margin-bottom: 14px;
+    }
+    .section-card h2 { font-size: 16px; font-weight: 700; color: #1e293b; margin-bottom: 6px; }
+    .section-card p { font-size: 13px; color: #64748b; line-height: 1.5; margin-bottom: 10px; }
+    .btn-action {
+      background: #0284c7;
+      color: #ffffff;
+      padding: 6px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    #navigationStatus {
+      margin-top: 20px;
+      padding: 12px;
+      border-radius: 6px;
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      font-family: monospace;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Portal Navigation</h1>
+    <p class="subtitle">Generic links and navigation buttons for agent grounding and link verification.</p>
+
+    <nav class="nav-bar" aria-label="Main Navigation">
+      <a href="#pricing" class="nav-link" id="linkPricing" onclick="recordNav('Pricing')">Pricing Page</a>
+      <a href="#downloads" class="nav-link" id="linkDownloads" onclick="recordNav('Downloads')">Downloads</a>
+      <a href="#documentation" class="nav-link" id="linkDocs" onclick="recordNav('Documentation')">Documentation</a>
+      <a href="#support" class="nav-link" id="linkSupport" onclick="recordNav('Support')">Support</a>
+      <a href="#about" class="nav-link" id="linkAbout" onclick="recordNav('About Us')">About Us</a>
+    </nav>
+
+    <div class="section-card" id="pricing">
+      <h2>Pricing Overview</h2>
+      <p>Flexible tiers designed for on-device lightweight execution.</p>
+      <button type="button" class="btn-action" id="btnViewPricing" onclick="recordNav('View Pricing Details')">View Pricing Details</button>
+    </div>
+
+    <div class="section-card" id="downloads">
+      <h2>Downloads Hub</h2>
+      <p>Download the latest ONNX weights, OCR models, and extension bundles.</p>
+      <button type="button" class="btn-action" id="btnDownloadWeights" onclick="recordNav('Download ONNX Weights')">Download ONNX Weights</button>
+    </div>
+
+    <div class="section-card" id="documentation">
+      <h2>Documentation &amp; API Reference</h2>
+      <p>Detailed architecture descriptions, privacy contracts, and grounding guidelines.</p>
+      <button type="button" class="btn-action" id="btnOpenDocs" onclick="recordNav('Open Docs')">Open Docs</button>
+    </div>
+
+    <div id="navigationStatus">Awaiting navigation action...</div>
+  </div>
+
+  <script>
+    function recordNav(dest) {
+      document.getElementById("navigationStatus").innerHTML = `<strong>Navigated:</strong> Successfully opened <code>${dest}</code> at ${new Date().toLocaleTimeString()}.`;
+    }
+  </script>
+</body>
+</html>
