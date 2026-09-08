@@ -92,8 +92,8 @@ function executeAction(actionPayload) {
 
   const { action, target, amount } = actionPayload;
 
-  // Explicit action allowlist check: exactly {"CLICK", "SCROLL", "FILL"} permitted
-  const ALLOWED_ACTIONS = new Set(["CLICK", "SCROLL", "FILL"]);
+  // Explicit action allowlist check: exactly {"CLICK", "SCROLL", "FILL", "FILL_FORM", "AUTOFILL"} permitted
+  const ALLOWED_ACTIONS = new Set(["CLICK", "SCROLL", "FILL", "FILL_FORM", "AUTOFILL"]);
   if (!ALLOWED_ACTIONS.has(action)) {
     return {
       executed: false,
@@ -392,6 +392,119 @@ function executeAction(actionPayload) {
         reason: `Error during fill execution: ${fillErr.message}`
       };
     }
+  }
+
+  // 2b. FILL_FORM Action Execution (Simultaneous Whole-Form Autofill using Local Profile)
+  if (action === "FILL_FORM" || action === "AUTOFILL") {
+    const profile = actionPayload.profile || (typeof window !== "undefined" && window.SIHFormProfile ? window.SIHFormProfile.getFormProfile() : null) || {
+      fullName: "Sanketh Mallikarjuna",
+      name: "Sanketh Mallikarjuna",
+      email: "sanketh@example.com",
+      phone: "+1-555-0199",
+      organization: "SIH Visual Perception Labs",
+      address: "123 Innovation Way, Tech Park",
+      city: "Bengaluru",
+      state: "Karnataka",
+      zip: "560001",
+      comments: "Automated visual perception agent verification test."
+    };
+
+    const freshElements = extractVisualElementsWithNodes();
+    const fieldsFilled = [];
+
+    for (let idx = 0; idx < freshElements.length; idx++) {
+      const item = freshElements[idx];
+      if (!item || !item.node || !item.node.isConnected) continue;
+
+      const el = item.node;
+      const tagName = (el.tagName || "").toLowerCase();
+      const elType = (el.type || "").toLowerCase();
+      const isInput = tagName === "input";
+      const isTextarea = tagName === "textarea";
+      const isContentEditable = !!(el.isContentEditable || (el.getAttribute && el.getAttribute("contenteditable") === "true"));
+      const isRoleTextbox = !!(el.getAttribute && el.getAttribute("role") === "textbox");
+
+      if (!isInput && !isTextarea && !isContentEditable && !isRoleTextbox) continue;
+
+      // Refuse sensitive password fields strictly
+      if (isInput && elType === "password") continue;
+      // Skip non-fillable inputs (buttons, submit, reset, hidden)
+      if (isInput && ["submit", "button", "reset", "hidden", "image"].includes(elType)) continue;
+      // Skip disabled or read-only controls
+      if (el.disabled || el.readOnly || (el.getAttribute && el.getAttribute("aria-disabled") === "true") || (el.getAttribute && el.getAttribute("readonly") !== null)) continue;
+
+      let fillVal = null;
+      let matchedKey = null;
+
+      if (typeof window !== "undefined" && window.SIHFormProfile && typeof window.SIHFormProfile.matchFieldToProfile === "function") {
+        const matchResult = window.SIHFormProfile.matchFieldToProfile(item, profile);
+        if (matchResult && matchResult.value) {
+          fillVal = matchResult.value;
+          matchedKey = matchResult.key;
+        }
+      }
+
+      if (!fillVal) {
+        const normLabel = normalizeLabel(item.label || el.placeholder || el.name || el.id || "");
+        if (normLabel.includes("name")) { fillVal = profile.fullName || profile.name; matchedKey = "name"; }
+        else if (normLabel.includes("email") || normLabel.includes("mail")) { fillVal = profile.email; matchedKey = "email"; }
+        else if (normLabel.includes("phone") || normLabel.includes("mobile") || normLabel.includes("contact")) { fillVal = profile.phone; matchedKey = "phone"; }
+        else if (normLabel.includes("org") || normLabel.includes("company")) { fillVal = profile.organization || profile.company; matchedKey = "organization"; }
+        else if (normLabel.includes("address") || normLabel.includes("street")) { fillVal = profile.address || profile.street; matchedKey = "address"; }
+        else if (normLabel.includes("city") || normLabel.includes("town")) { fillVal = profile.city; matchedKey = "city"; }
+        else if (normLabel.includes("state") || normLabel.includes("province")) { fillVal = profile.state; matchedKey = "state"; }
+        else if (normLabel.includes("zip") || normLabel.includes("postal") || normLabel.includes("pin")) { fillVal = profile.zip || profile.postalCode; matchedKey = "zip"; }
+        else if (normLabel.includes("comment") || normLabel.includes("message") || normLabel.includes("feedback") || normLabel.includes("notes")) { fillVal = profile.comments || profile.message; matchedKey = "comments"; }
+      }
+
+      if (fillVal !== null && fillVal !== undefined) {
+        try {
+          if (isInput || isTextarea) {
+            const proto = isInput
+              ? (typeof window !== "undefined" && window.HTMLInputElement ? window.HTMLInputElement.prototype : Object.getPrototypeOf(el))
+              : (typeof window !== "undefined" && window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : Object.getPrototypeOf(el));
+            const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+            if (nativeSetter) {
+              nativeSetter.call(el, String(fillVal));
+            } else {
+              el.value = String(fillVal);
+            }
+            el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+          } else if (isContentEditable || isRoleTextbox) {
+            el.textContent = String(fillVal);
+            el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+          }
+
+          let verified = false;
+          if (isInput || isTextarea) {
+            verified = el.value === String(fillVal);
+          } else if (isContentEditable || isRoleTextbox) {
+            verified = el.textContent === String(fillVal) || el.innerText === String(fillVal);
+          }
+
+          fieldsFilled.push({
+            targetIndex: idx,
+            targetType: item.type,
+            targetLabel: item.label || el.placeholder || el.name || `Field #${idx}`,
+            matchedKey: matchedKey,
+            verified: verified
+          });
+        } catch (e) {
+          console.warn("Error filling field in simultaneous pass:", e);
+        }
+      }
+    }
+
+    return {
+      executed: fieldsFilled.length > 0,
+      action: "FILL_FORM",
+      fieldsFilled: fieldsFilled,
+      count: fieldsFilled.length,
+      verified: fieldsFilled.length > 0 && fieldsFilled.every(f => f.verified),
+      simultaneous: true
+    };
   }
 
   // 3. SCROLL Action Execution (Milestone 6)

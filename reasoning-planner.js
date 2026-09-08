@@ -95,14 +95,18 @@
     const targetType = normalize(action.targetType || "");
     const semanticTag = normalize(action.semanticTag || "");
 
-    // 1. FILL Action: Low risk for ordinary form inputs (passwords already blocked by content script)
-    if (actionType === "FILL") {
+    // 1. FILL / FILL_FORM Action: Low risk for ordinary form inputs (passwords already blocked by content script)
+    if (actionType === "FILL" || actionType === "FILL_FORM") {
       return {
         risk: RISK_LEVELS.LOW,
         level: RISK_LEVELS.LOW,
         requiresApproval: false,
-        reason: `Form fill on '${action.targetLabel || action.fieldHint || "field"}'. Local non-consequential modification.`,
-        rationale: `Form fill on '${action.targetLabel || action.fieldHint || "field"}'. Local non-consequential modification.`
+        reason: actionType === "FILL_FORM"
+          ? "Simultaneous form autofill using local profile. Local non-consequential modification."
+          : `Form fill on '${action.targetLabel || action.fieldHint || "field"}'. Local non-consequential modification.`,
+        rationale: actionType === "FILL_FORM"
+          ? "Simultaneous form autofill using local profile. Local non-consequential modification."
+          : `Form fill on '${action.targetLabel || action.fieldHint || "field"}'. Local non-consequential modification.`
       };
     }
 
@@ -204,7 +208,24 @@
       const stepType = (rawStep.type || "").toUpperCase();
       let riskAssessment = null;
 
-      if (stepType === "FILL") {
+      if (stepType === "FILL_FORM") {
+        fillCount++;
+        riskAssessment = classifyActionRisk({ action: "FILL_FORM", targetLabel: rawStep.fieldHint || "all form fields" });
+        steps.push({
+          id: idx + 1,
+          stepId: idx,
+          type: "FILL_FORM",
+          target: "all form fields",
+          fieldHint: rawStep.fieldHint || "all form fields",
+          risk: riskAssessment.risk || riskAssessment.level,
+          level: riskAssessment.level,
+          requiresApproval: false,
+          reasoning: `Step ${idx + 1}: Simultaneously fill all matching form fields on page using local form profile data.`,
+          preconditions: ["page_active"],
+          postconditions: ["all_form_fields_verified_locally"]
+        });
+        reasoningTrace.push(`Step ${idx + 1} planned: FILL_FORM (Simultaneous Profile Autofill) [${riskAssessment.level} Risk - Autonomous]`);
+      } else if (stepType === "FILL") {
         fillCount++;
         riskAssessment = classifyActionRisk({ action: "FILL", targetLabel: rawStep.fieldHint });
         steps.push({
@@ -319,10 +340,10 @@
     // 1. Dependency check: Submit requires all prior fill operations to have succeeded and verified
     if (step.preconditions && step.preconditions.includes("all_prior_fields_verified")) {
       const failedOrUnverified = completedStepsHistory.filter(
-        (prev) => prev.action && prev.action.action === "FILL" && !prev.verified
+        (prev) => prev.action && (prev.action.action === "FILL" || prev.action.action === "FILL_FORM") && !prev.verified
       );
       if (failedOrUnverified.length > 0) {
-        const failedHints = failedOrUnverified.map(f => f.action.targetLabel || "field").join(", ");
+        const failedHints = failedOrUnverified.map(f => f.action.targetLabel || f.action.action || "field").join(", ");
         return {
           valid: false,
           satisfied: false,

@@ -1,0 +1,20 @@
+{
+  "fullName": "Sanketh Mallikarjuna",
+  "name": "Sanketh Mallikarjuna",
+  "firstName": "Sanketh",
+  "lastName": "Mallikarjuna",
+  "email": "sanketh@example.com",
+  "phone": "+1-555-0199",
+  "organization": "SIH Visual Perception Labs",
+  "company": "SIH Visual Perception Labs",
+  "address": "123 Innovation Way, Tech Park",
+  "street": "123 Innovation Way",
+  "city": "Bengaluru",
+  "state": "Karnataka",
+  "zip": "560001",
+  "postalCode": "560001",
+  "country": "India",
+  "comments": "Automated visual perception agent verification test.",
+  "message": "Automated visual perception agent verification test.",
+  "notes": "Automated visual perception agent verification test."
+}

@@ -30,7 +30,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["pii-detector.js", "content.js"],
+      "js": ["form-profile.js", "pii-detector.js", "content.js"],
       "run_at": "document_idle"
     }
   ],
@@ -56,6 +56,8 @@
         "lib/ocr/tesseract-core.wasm.js",
         "lib/ocr/tesseract-core.wasm",
         "lib/ocr/*",
+        "form-profile.js",
+        "form-profile.json",
         "change-detector.js",
         "reasoning-planner.js",
         "task-parser.js",

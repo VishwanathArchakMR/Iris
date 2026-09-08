@@ -208,7 +208,39 @@
       }
     }
 
-    // 2. Sequential FILL without values: "Fill the name and email, then click submit"
+    // 2. Whole form filling with profile: "fill the form", "autofill form", "fill all details", "fill form simultaneously"
+    const wholeFormMatch = task.match(/^(?:fill|autofill|complete|populate)\s+(?:the\s+|this\s+|all\s+|out\s+the\s+)?(?:form|details|fields|profile|registration\s+form|contact\s+form|simple\s+form)(?:\s+simultaneously|\s+all\s+at\s+once)?$/i);
+    if (wholeFormMatch) {
+      return buildResultFromSteps([
+        {
+          type: "FILL_FORM",
+          fieldHint: "all form fields",
+          profileSource: "form-profile.json",
+          simultaneous: true
+        }
+      ]);
+    }
+
+    // 2b. Whole form fill then click: "fill the form, then click submit", "fill form and submit"
+    const wholeFormThenClickMatch = task.match(/^(?:fill|autofill|complete)\s+(?:the\s+|this\s+|all\s+|out\s+the\s+)?(?:form|details|fields|profile)\s*(?:,\s*then|\s+then|\s*;\s*then|\s*,\s*and\s+then|\s+and\s+then|\s+and)\s+(?:click|press|tap|submit|send)\s+(?:on\s+)?(?:the\s+)?([a-z0-9_\-\s]+?)(?:\s+button)?$/i);
+    if (wholeFormThenClickMatch) {
+      const clickTarget = wholeFormThenClickMatch[1].trim();
+      return buildResultFromSteps([
+        {
+          type: "FILL_FORM",
+          fieldHint: "all form fields",
+          profileSource: "form-profile.json",
+          simultaneous: true
+        },
+        {
+          type: "CLICK",
+          targetHint: clickTarget,
+          legacyTarget: resolveLegacyClickTarget(clickTarget)
+        }
+      ]);
+    }
+
+    // 2c. Sequential FILL without values: "Fill the name and email, then click submit"
     const fillThenClickMatch = task.match(/^fill\s+(?:the\s+)?([a-z0-9_\-\s]+?)\s+and\s+(?:the\s+)?([a-z0-9_\-\s]+?)\s*,\s*then\s+(?:click|press)\s+(?:the\s+)?([a-z0-9_\-\s]+?)(?:\s+button)?$/i);
     if (fillThenClickMatch) {
       const field1 = fillThenClickMatch[1].trim();
@@ -394,7 +426,16 @@
     let fillStepIndex = 0;
     steps.forEach((step, idx) => {
       step.stepId = idx;
-      if (step.type === "FILL") {
+      if (step.type === "FILL_FORM") {
+        sanitizedPlan.push({
+          type: "FILL_FORM",
+          fieldHint: step.fieldHint || "all form fields",
+          stepId: idx
+        });
+        localValues[idx] = "[FORM_PROFILE_DATA]";
+        localValues["form_profile"] = step.profileSource || "form-profile.json";
+        localValues["simultaneous"] = true;
+      } else if (step.type === "FILL") {
         sanitizedPlan.push({
           type: "FILL",
           fieldHint: step.fieldHint,

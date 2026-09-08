@@ -1246,7 +1246,14 @@ document.addEventListener("DOMContentLoaded", () => {
         let taskToSend = task;
         let stepFieldPlan = [];
         if (currentStepPlan) {
-          if (currentStepPlan.type === "FILL") {
+          if (currentStepPlan.type === "FILL_FORM") {
+            taskToSend = "Fill form";
+            stepFieldPlan = [{
+              type: "FILL_FORM",
+              fieldHint: currentStepPlan.fieldHint || "all form fields",
+              stepId: currentStep - 1
+            }];
+          } else if (currentStepPlan.type === "FILL") {
             taskToSend = `Fill ${currentStepPlan.fieldHint}`;
             stepFieldPlan = [{
               type: "FILL",
@@ -1265,7 +1272,7 @@ document.addEventListener("DOMContentLoaded", () => {
             stepFieldPlan = [];
           }
         } else if (isPlannedTask) {
-          stepFieldPlan = parsedTask.sanitizedPlan.filter((s) => s.type === "FILL");
+          stepFieldPlan = parsedTask.sanitizedPlan.filter((s) => s.type === "FILL" || s.type === "FILL_FORM");
         }
 
         const structuredContext = {
@@ -1357,7 +1364,14 @@ document.addEventListener("DOMContentLoaded", () => {
         if (currentStepPlan) {
           const plannedType = (currentStepPlan.type || "").toUpperCase();
 
-          if (plannedType === "FILL") {
+          if (plannedType === "FILL_FORM") {
+            agentAction = {
+              action: "FILL_FORM",
+              target: "all form fields",
+              targetLabel: "all form fields",
+              groundingMethod: "simultaneous-form-profile"
+            };
+          } else if (plannedType === "FILL") {
             const isCompatibleFill = agentAction && agentAction.action === "FILL" && agentAction.targetIndex !== undefined;
             if (!isCompatibleFill) {
               const FORM_TYPES = new Set(["input", "textarea", "select"]);
@@ -1616,7 +1630,16 @@ document.addEventListener("DOMContentLoaded", () => {
         let actionExecutedSuccessfully = false;
 
         let executionPayload = null;
-        if (agentAction.action === "FILL") {
+        if (agentAction.action === "FILL_FORM" || (currentStepPlan && currentStepPlan.type === "FILL_FORM")) {
+          const localProf = (window.SIHFormProfile && typeof window.SIHFormProfile.getFormProfile === "function")
+            ? window.SIHFormProfile.getFormProfile()
+            : null;
+          executionPayload = {
+            action: "FILL_FORM",
+            profile: localProf,
+            simultaneous: true
+          };
+        } else if (agentAction.action === "FILL") {
           // Phase 7 Safety Guard: Never fill the wrong field
           if (currentStepPlan && currentStepPlan.type === "FILL") {
             const hintNorm = (currentStepPlan.fieldHint || "").toLowerCase().replace(/[:*_\-\/\\]+/g, " ").trim();
@@ -2006,7 +2029,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 const r = execRes.result;
                 if (r.executed) {
                   actionExecutedSuccessfully = true;
-                  if (r.action === "FILL") {
+                  if (r.action === "FILL_FORM") {
+                    const fieldNames = (r.fieldsFilled || []).map(f => f.targetLabel || f.matchedKey).join(", ");
+                    actionExecutionSummary = `Executed: FILL_FORM (Simultaneous) → Filled ${r.count} field(s) [${fieldNames}]`;
+                    if (fillStepStatus) {
+                      fillStepStatus.textContent = `Autofilled ${r.count} field(s) simultaneously (Verified: ${r.verified ? "OK" : "Pending"})`;
+                    }
+                  } else if (r.action === "FILL") {
                     actionExecutionSummary = `Executed: FILL → ${r.targetType}: '${r.targetLabel}' (index: ${r.groundedIndex}, verified: ${r.verified ? "OK" : "Pending"})`;
                     if (fillStepStatus) {
                       fillStepStatus.textContent = `Step ${currentStep} (${r.targetLabel}): OK (Verified: ${r.verified ? "OK" : "Pending"})`;
@@ -2020,8 +2049,8 @@ document.addEventListener("DOMContentLoaded", () => {
                   }
                 } else {
                   actionExecutionSummary = `Not executed: ${r.reason}`;
-                  if (fillStepStatus && agentAction.action === "FILL") {
-                    fillStepStatus.textContent = `Step ${currentStep} (${agentAction.targetLabel}): Failed (${r.reason})`;
+                  if (fillStepStatus && (agentAction.action === "FILL" || agentAction.action === "FILL_FORM")) {
+                    fillStepStatus.textContent = `Failed: ${r.reason}`;
                   }
                 }
               } else {
