@@ -1355,6 +1355,30 @@ document.addEventListener("DOMContentLoaded", () => {
           agentSanitizedUploadStatus.style.color = "#2e7d32";
         }
 
+        // Section AI Provider Telemetry
+        if (agentModeStatus) {
+          if (data.provider === "Gemini") {
+            agentModeStatus.textContent = "AI PROVIDER: GEMINI";
+            agentModeStatus.style.color = "#1565c0";
+          } else if (data.provider === "Demo fallback" || data.fallbackUsed) {
+            agentModeStatus.textContent = "AI PROVIDER: DEMO FALLBACK";
+            agentModeStatus.style.color = "#e65100";
+          } else {
+            agentModeStatus.textContent = "DEMO MODE (Deterministic)";
+            agentModeStatus.style.color = "#0d47a1";
+          }
+        }
+        const agentReasoningLocation = document.getElementById("agentReasoningLocation");
+        if (agentReasoningLocation) {
+          if (data.provider === "Gemini") {
+            agentReasoningLocation.textContent = "GEMINI (Sanitized Context)";
+            agentReasoningLocation.style.color = "#1565c0";
+          } else {
+            agentReasoningLocation.textContent = "LOCAL (Deterministic)";
+            agentReasoningLocation.style.color = "#2e7d32";
+          }
+        }
+
         let agentAction = data.action;
 
         // FIX #2: STRICT STEP COMPATIBILITY & EXPLICIT TASK AUTHORITY

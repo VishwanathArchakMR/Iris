@@ -9,11 +9,19 @@ import json
 import uuid
 import difflib
 import re
+import concurrent.futures
 from typing import Optional, List, Dict, Any, Tuple, Protocol
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator
+
+try:
+    from google import genai
+    from google.genai import types
+    HAS_GENAI_SDK = True
+except ImportError:
+    HAS_GENAI_SDK = False
 
 app = FastAPI(title="SIH26171 Agent Decision & Visual Gateway Backend")
 
@@ -49,7 +57,7 @@ async def serve_demo_page(page_name: str):
 # Milestones 3–6: Text-Only Sanitized Context (Preserved & Backwards-Compatible)
 # =====================================================================
 
-ALLOWED_ACTIONS = {"CLICK", "SCROLL", "FILL", "WARN", "NONE"}
+ALLOWED_ACTIONS = {"CLICK", "SCROLL", "FILL", "FILL_FORM", "WARN", "NONE"}
 FORBIDDEN_VALUE_KEYS = {"value", "fieldvalue", "field_value", "localvalue", "local_value"}
 
 def assert_no_forbidden_value_keys(data: Any, path: str = ""):
@@ -87,6 +95,11 @@ class AgentAction(BaseModel):
     targetLabel: Optional[str] = None
     groundingScore: Optional[float] = None
     groundingMethod: Optional[str] = None
+    confidence: Optional[float] = None
+    requiresApproval: Optional[bool] = None
+    fieldHint: Optional[str] = None
+    valueKey: Optional[str] = None
+    ambiguity: Optional[str] = None
 
     @field_validator("action")
     @classmethod
@@ -237,7 +250,18 @@ class DemoAgentProvider:
     Evaluates user task and sanitized structured context without external AI API dependencies.
     Demonstrates the end-to-end multimodal gateway contract, privacy verification, and safe execution.
     """
+    def __init__(self):
+        self.last_provider_type: str = "demo"
+        self.last_provider_name: str = "Demo"
+        self.last_fallback_used: bool = False
+        self.last_fallback_reason: Optional[str] = None
+        self.last_confidence: float = 1.0
+
     def propose_action(self, task: str, context: dict) -> Tuple[dict, str]:
+        self.last_provider_type = "demo"
+        self.last_provider_name = "Demo"
+        self.last_fallback_used = False
+        self.last_fallback_reason = None
         task_lower = (task or "").strip().lower()
         elements = context.get("elements", [])
         redacted_sample = (context.get("redactedSample") or "").lower()
@@ -573,8 +597,400 @@ class DemoAgentProvider:
         reasoning = f"No allowlisted action matched task '{task}' or sanitized page context."
         return {"action": "NONE", "target": None}, reasoning
 
+GEMINI_SYSTEM_INSTRUCTION = """You are the visual perception reasoning agent for SIH26171, an on-device browser automation assistant.
+Your task is to analyze the user's natural language goal and the sanitized list of perceived webpage elements, then propose the next single structured action.
+
+PERMITTED ACTIONS:
+- CLICK: Click a button, link, tab, or interactive element.
+- FILL: Focus/fill a single form field (provide target or fieldHint). Do NOT generate sensitive values or passwords.
+- FILL_FORM: User wants to fill an entire form or profile (e.g. 'fill the form'). Field values are supplied locally from the client's safe profile.
+- SCROLL: Scroll viewport (amount in pixels, default 500).
+- NONE: Ambiguous request, unsupported intent, or no matching element found.
+
+OUTPUT FORMAT:
+Output strictly valid JSON matching this schema:
+{
+  "action": "CLICK" | "FILL" | "FILL_FORM" | "SCROLL" | "NONE",
+  "target": "target element label or null",
+  "targetRole": "button | link | input | textarea | select | etc., or null",
+  "targetIndex": integer or null,
+  "fieldHint": "field hint if FILL, or null",
+  "valueKey": "name | email | address | phone | comments, or null",
+  "amount": integer or null,
+  "confidence": float 0.0 to 1.0,
+  "reasoning": "short explanation of the decision",
+  "ambiguity": "NONE" | "AMBIGUOUS" | "UNSUPPORTED",
+  "requiresApproval": boolean (true for submit, delete, purchase, confirm, or destructive/consequential actions)
+}
+
+SECURITY & PRIVACY RULES:
+1. Output MUST be valid JSON only. No markdown fences, no explanatory text outside JSON.
+2. NEVER output executable code, JavaScript, eval, URLs, or browser commands.
+3. NEVER output passwords or sensitive data.
+4. If multiple elements match with similar likelihood, set ambiguity="AMBIGUOUS" and action="NONE".
+5. If confidence is low (< 0.35) or no element matches, set action="NONE".
+"""
+
+class GeminiAgentProvider:
+    """
+    AI Reasoning Provider powered by Google Gemini API.
+    Performs semantic task understanding and structured action proposal
+    over sanitized structured DOM context.
+    
+    SAFETY & PRIVACY CONTRACT:
+    - Never receives raw screenshots, passwords, detected PII, or raw form values.
+    - Produces ONLY structured JSON proposals conforming to ALLOWED_ACTIONS.
+    - Falls back automatically to DemoAgentProvider on missing key, timeout, error, or malformed output.
+    """
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model_name: Optional[str] = None,
+        timeout_seconds: float = 5.0,
+        fallback_provider: Optional[AgentProvider] = None,
+    ):
+        self.api_key = (api_key if api_key is not None else os.getenv("GEMINI_API_KEY", "")).strip()
+        self.model_name = (model_name if model_name is not None else os.getenv("GEMINI_MODEL", "gemini-2.5-flash")).strip()
+        self.timeout_seconds = timeout_seconds
+        self.fallback_provider = fallback_provider or DemoAgentProvider()
+        self.last_provider_type: str = "gemini"
+        self.last_provider_name: str = "Gemini"
+        self.last_fallback_used: bool = False
+        self.last_fallback_reason: Optional[str] = None
+        self.last_confidence: float = 1.0
+
+    def _fallback(self, task: str, context: dict, reason: str) -> Tuple[dict, str]:
+        self.last_provider_type = "demo_fallback"
+        self.last_provider_name = "Demo fallback"
+        self.last_fallback_used = True
+        self.last_fallback_reason = reason
+        print(f"[AI PROVIDER] Gemini fallback triggered ({reason}). Using DemoAgentProvider.")
+        action, base_reasoning = self.fallback_provider.propose_action(task, context)
+        reasoning = f"[Demo Fallback: {reason}] {base_reasoning}"
+        self.last_confidence = action.get("groundingScore", 0.9)
+        return action, reasoning
+
+    def _sanitize_context_for_prompt(self, context: dict) -> dict:
+        """
+        Defensively strips any sensitive properties or password elements before sending to AI.
+        """
+        raw_elements = context.get("elements", [])
+        sanitized_elements = []
+        for i, el in enumerate(raw_elements):
+            if not isinstance(el, dict):
+                continue
+            el_type = str(el.get("type", "")).lower()
+            el_tag = str(el.get("tag", "")).lower()
+            # Omit password and sensitive fields entirely from prompt
+            if el_type in {"password", "hidden"} or "password" in str(el.get("label", "")).lower():
+                continue
+            sanitized_elements.append({
+                "index": i,
+                "tag": el_tag,
+                "type": el_type or el_tag,
+                "label": str(el.get("label", ""))[:80],
+                "placeholder": str(el.get("placeholder", ""))[:80] if el.get("placeholder") else None,
+                "ariaLabel": str(el.get("ariaLabel", ""))[:80] if el.get("ariaLabel") else None,
+                "disabled": bool(el.get("disabled") or str(el.get("aria-disabled", "")).lower() == "true")
+            })
+
+        return {
+            "title": str(context.get("title", ""))[:120],
+            "elementCount": len(sanitized_elements),
+            "elements": sanitized_elements,
+            "redactedSample": str(context.get("redactedSample", ""))[:300]
+        }
+
+    def _call_gemini(self, prompt: str) -> str:
+        """Invokes Gemini API with strict timeout."""
+        def _invoke():
+            if HAS_GENAI_SDK and self.api_key:
+                client = genai.Client(api_key=self.api_key)
+                response = client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=GEMINI_SYSTEM_INSTRUCTION,
+                        response_mime_type="application/json",
+                        temperature=0.1,
+                    )
+                )
+                return response.text
+            else:
+                import urllib.request
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent?key={self.api_key}"
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "systemInstruction": {"parts": [{"text": GEMINI_SYSTEM_INSTRUCTION}]},
+                    "generationConfig": {
+                        "responseMimeType": "application/json",
+                        "temperature": 0.1
+                    }
+                }
+                req = urllib.request.Request(
+                    url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    candidates = data.get("candidates", [])
+                    if candidates and "content" in candidates[0]:
+                        parts = candidates[0]["content"].get("parts", [])
+                        if parts and "text" in parts[0]:
+                            return parts[0]["text"]
+                raise RuntimeError("No text returned in Gemini HTTP response")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_invoke)
+            return future.result(timeout=self.timeout_seconds)
+
+    def propose_action(self, task: str, context: dict) -> Tuple[dict, str]:
+        # If no API key is provided, gracefully fall back immediately
+        if not self.api_key:
+            return self._fallback(task, context, reason="GEMINI_API_KEY is not set")
+
+        elements = context.get("elements", [])
+        sanitized_ctx = self._sanitize_context_for_prompt(context)
+        
+        prompt = (
+            f"USER TASK: {task}\n\n"
+            f"PAGE TITLE: {sanitized_ctx['title']}\n"
+            f"PERCEIVED ELEMENTS:\n{json.dumps(sanitized_ctx['elements'], indent=2)}\n"
+        )
+
+        try:
+            raw_response = self._call_gemini(prompt)
+        except concurrent.futures.TimeoutError:
+            return self._fallback(task, context, reason="Gemini request timed out")
+        except Exception as e:
+            return self._fallback(task, context, reason=f"Gemini API error: {type(e).__name__}")
+
+        # Parse JSON
+        cleaned_json = (raw_response or "").strip()
+        if cleaned_json.startswith("```"):
+            cleaned_json = re.sub(r"^```(?:json)?\n?", "", cleaned_json)
+            cleaned_json = re.sub(r"\n?```$", "", cleaned_json).strip()
+
+        try:
+            parsed = json.loads(cleaned_json)
+        except Exception:
+            return self._fallback(task, context, reason="Malformed JSON in Gemini output")
+
+        if not isinstance(parsed, dict):
+            return self._fallback(task, context, reason="Gemini output was not a JSON object")
+
+        action_name = str(parsed.get("action", "")).upper()
+        if action_name not in ALLOWED_ACTIONS:
+            return self._fallback(task, context, reason=f"Invalid action '{action_name}' from Gemini")
+
+        try:
+            confidence = float(parsed.get("confidence", 0.8))
+        except (ValueError, TypeError):
+            confidence = 0.8
+        confidence = max(0.0, min(1.0, confidence))
+        reasoning = str(parsed.get("reasoning", "Gemini semantic action proposal."))
+        ambiguity = str(parsed.get("ambiguity", "NONE")).upper()
+        requires_approval = bool(parsed.get("requiresApproval", False))
+
+        # Check for ambiguity or low confidence
+        if ambiguity in {"AMBIGUOUS", "UNSUPPORTED"} or confidence < 0.35:
+            self.last_provider_type = "gemini"
+            self.last_provider_name = "Gemini"
+            self.last_fallback_used = False
+            self.last_confidence = confidence
+            return {
+                "action": "NONE",
+                "target": None,
+                "confidence": round(confidence, 3),
+                "ambiguity": ambiguity,
+                "groundingMethod": "gemini-ambiguity-rejection"
+            }, f"Gemini rejected action: ambiguity={ambiguity}, confidence={confidence:.2f}. {reasoning}"
+
+        # Grounding
+        if action_name in {"CLICK", "FILL"}:
+            target_str = str(parsed.get("target") or parsed.get("fieldHint") or "").strip()
+            proposed_idx = parsed.get("targetIndex")
+            
+            best_idx = None
+            best_score = 0.0
+            best_el = None
+
+            # First verify proposed_idx if valid
+            if isinstance(proposed_idx, int) and 0 <= proposed_idx < len(elements):
+                cand_el = elements[proposed_idx]
+                score = _match_score(target_str, str(cand_el.get("label", "")))
+                if score >= 0.35 or not target_str:
+                    best_idx = proposed_idx
+                    best_score = max(score, confidence)
+                    best_el = cand_el
+
+            # Otherwise ground by label / target / synonyms
+            if best_idx is None and target_str:
+                candidates = []
+                for i, el in enumerate(elements):
+                    if el.get("disabled") or str(el.get("aria-disabled", "")).lower() == "true":
+                        continue
+                    if action_name == "FILL" and str(el.get("type", "")).lower() not in {"input", "textarea", "select", "textbox", "checkbox", "radio"}:
+                        continue
+                    s_label = _match_score(target_str, str(el.get("label", "")))
+                    s_ph = _match_score(target_str, str(el.get("placeholder", ""))) if el.get("placeholder") else 0.0
+                    s_aria = _match_score(target_str, str(el.get("ariaLabel", ""))) if el.get("ariaLabel") else 0.0
+                    s_best = max(s_label, s_ph, s_aria)
+                    if s_best >= 0.35:
+                        candidates.append((s_best, i, el))
+
+                candidates.sort(key=lambda x: x[0], reverse=True)
+                if candidates:
+                    # Check ambiguity
+                    if (len(candidates) > 1 and candidates[1][0] >= 0.50 and
+                        abs(candidates[0][0] - candidates[1][0]) < 0.08 and
+                        _normalize(candidates[0][2].get("label", "")) != _normalize(candidates[1][2].get("label", ""))):
+                        self.last_provider_type = "gemini"
+                        self.last_provider_name = "Gemini"
+                        self.last_fallback_used = False
+                        self.last_confidence = confidence
+                        return {
+                            "action": "NONE",
+                            "target": None,
+                            "confidence": round(confidence, 3),
+                            "groundingScore": round(candidates[0][0], 3),
+                            "ambiguity": "AMBIGUOUS",
+                            "groundingMethod": "ambiguity-rejection"
+                        }, f"Ambiguous target for '{target_str}': multiple candidate elements matched with similar confidence. Action rejected for safety."
+                    best_score, best_idx, best_el = candidates[0]
+
+            if best_idx is not None and best_score >= 0.35 and best_el:
+                # Check for consequential safety keywords to enforce human approval
+                label_lower = str(best_el.get("label", "")).lower()
+                task_lower = task.lower()
+                if any(w in label_lower or w in task_lower for w in ["submit", "delete", "purchase", "confirm", "pay", "order"]):
+                    requires_approval = True
+
+                self.last_provider_type = "gemini"
+                self.last_provider_name = "Gemini"
+                self.last_fallback_used = False
+                self.last_confidence = confidence
+
+                action_res = {
+                    "action": action_name,
+                    "targetIndex": best_idx,
+                    "targetType": best_el.get("type") or best_el.get("tag", "button"),
+                    "targetLabel": str(best_el.get("label", ""))[:60],
+                    "groundingScore": round(best_score, 3),
+                    "confidence": round(confidence, 3),
+                    "groundingMethod": "gemini-grounded-local",
+                    "requiresApproval": requires_approval
+                }
+                if parsed.get("fieldHint"):
+                    action_res["fieldHint"] = str(parsed["fieldHint"])
+                if parsed.get("valueKey"):
+                    action_res["valueKey"] = str(parsed["valueKey"])
+
+                # Attach fieldPlan if present for tests
+                field_plan = context.get("fieldPlan") or []
+                if field_plan and isinstance(field_plan, list):
+                    all_plan_actions = []
+                    for p_item in field_plan:
+                        p_hint = (p_item.get("fieldHint") or p_item.get("hint") or "") if isinstance(p_item, dict) else str(p_item)
+                        p_hint_lower = p_hint.strip().lower()
+                        p_cands = []
+                        for pi, pel in enumerate(elements):
+                            if str(pel.get("type", "")).lower() in {"input", "textarea", "select"} and not pel.get("disabled"):
+                                ps = max(_match_score(p_hint_lower, str(pel.get("label", ""))),
+                                         _match_score(p_hint_lower, str(pel.get("placeholder", ""))) if pel.get("placeholder") else 0.0)
+                                if ps >= 0.35:
+                                    p_cands.append((ps, pi, pel))
+                        if p_cands:
+                            p_cands.sort(key=lambda x: x[0], reverse=True)
+                            all_plan_actions.append({
+                                "action": "FILL",
+                                "targetIndex": p_cands[0][1],
+                                "targetType": p_cands[0][2].get("type"),
+                                "targetLabel": str(p_cands[0][2].get("label", ""))[:60],
+                                "groundingScore": round(p_cands[0][0], 3),
+                                "groundingMethod": "gemini-grounded-local",
+                            })
+                    if all_plan_actions:
+                        action_res["plan"] = all_plan_actions
+
+                return action_res, f"Gemini proposed {action_name} for '{target_str}'. Grounded to #{best_idx} ('{best_el.get('label')}') with score {best_score:.2f}. {reasoning}"
+            else:
+                self.last_provider_type = "gemini"
+                self.last_provider_name = "Gemini"
+                self.last_fallback_used = False
+                self.last_confidence = confidence
+                return {
+                    "action": "NONE",
+                    "target": None,
+                    "confidence": round(confidence, 3),
+                    "groundingScore": 0.0,
+                    "groundingMethod": "grounding-failed"
+                }, f"Gemini proposed target '{target_str}', but it could not be safely grounded in perceived DOM elements. Execution stopped."
+
+        elif action_name == "FILL_FORM":
+            self.last_provider_type = "gemini"
+            self.last_provider_name = "Gemini"
+            self.last_fallback_used = False
+            self.last_confidence = confidence
+            return {
+                "action": "FILL_FORM",
+                "target": "all form fields",
+                "confidence": round(confidence, 3),
+                "groundingMethod": "gemini-profile-fill",
+                "requiresApproval": False
+            }, f"Gemini recognized form-fill intent. Local profile values will be filled on-device. {reasoning}"
+
+        elif action_name == "SCROLL":
+            amt = parsed.get("amount") or 500
+            try:
+                amt = max(50, min(int(amt), 1500))
+            except Exception:
+                amt = 500
+            self.last_provider_type = "gemini"
+            self.last_provider_name = "Gemini"
+            self.last_fallback_used = False
+            self.last_confidence = confidence
+            return {
+                "action": "SCROLL",
+                "target": "PAGE",
+                "amount": amt,
+                "confidence": round(confidence, 3),
+                "groundingMethod": "gemini-viewport",
+                "requiresApproval": False
+            }, f"Gemini proposed scroll action ({amt}px). {reasoning}"
+
+        else:  # NONE
+            self.last_provider_type = "gemini"
+            self.last_provider_name = "Gemini"
+            self.last_fallback_used = False
+            self.last_confidence = confidence
+            return {
+                "action": "NONE",
+                "target": None,
+                "confidence": round(confidence, 3),
+                "groundingMethod": "gemini-none",
+                "requiresApproval": False
+            }, f"Gemini proposed no action. {reasoning}"
+
+def get_agent_provider(provider_type: Optional[str] = None) -> AgentProvider:
+    selected = (provider_type if provider_type is not None else os.getenv("AGENT_PROVIDER", "demo")).strip().lower()
+    if selected == "gemini":
+        return GeminiAgentProvider(
+            api_key=os.getenv("GEMINI_API_KEY", "").strip(),
+            model_name=os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip(),
+            fallback_provider=DemoAgentProvider()
+        )
+    return DemoAgentProvider()
+
 # Active agent provider selection (default: demo provider; no external API key needed)
-active_agent_provider: AgentProvider = DemoAgentProvider()
+active_agent_provider: AgentProvider = get_agent_provider()
+
+def set_active_agent_provider(provider: AgentProvider):
+    """Allows programmatic/test override of the active agent provider."""
+    global active_agent_provider
+    active_agent_provider = provider
 
 @app.post("/api/visual-context")
 async def receive_visual_context(
@@ -596,7 +1012,7 @@ async def receive_visual_context(
     Enforces:
       1. Structural privacy contract: privacyState must be 'SANITIZED' and rawScreenshotTransmitted must be false.
       2. Defense in depth: strictly rejects any payload containing 'value' or 'fieldValue' keys with HTTP 422.
-      3. Action allowlist: strictly allowlists actions in {"CLICK", "SCROLL", "FILL", "WARN", "NONE"}.
+      3. Action allowlist: strictly allowlists actions in {"CLICK", "SCROLL", "FILL", "FILL_FORM", "WARN", "NONE"}.
       4. In-memory processing only: screenshot is NEVER saved to disk or persistent storage.
       5. Image size cap: rejects payloads > 15MB with HTTP 413.
       6. Never logs raw image bytes or raw PII.
@@ -671,6 +1087,8 @@ async def receive_visual_context(
     element_count = parsed_context.get("elementCount", len(parsed_context.get("elements", [])))
     total_redacted = parsed_context.get("totalRedactedRegionCount", privacy_meta.get("redactedRegionsCount", 0))
 
+    provider_name = getattr(active_agent_provider, "last_provider_name", type(active_agent_provider).__name__)
+
     print("\n" + "=" * 60)
     print("[GATEWAY LOG] Received Sanitized Visual Context (Milestone 13):")
     print(f"  Request ID       : {requestId}")
@@ -680,11 +1098,18 @@ async def receive_visual_context(
     print(f"  Redacted Regions : {total_redacted}")
     print(f"  DOM Elements     : {element_count} elements")
     print(f"  Screenshot Size  : {len(screenshot_bytes)} bytes (In-Memory Processing Only)")
-    print(f"  Agent Provider   : DemoAgentProvider [DEMO MODE - SIH26171]")
+    print(f"  Agent Provider   : {provider_name}")
     print("=" * 60)
 
-    # 4. Invoke the deterministic demo agent
+    # 4. Invoke the active agent provider
     action, reasoning = active_agent_provider.propose_action(task, parsed_context)
+
+    # Provider metadata tracking
+    provider_type = getattr(active_agent_provider, "last_provider_type", "demo")
+    provider_display_name = getattr(active_agent_provider, "last_provider_name", "Demo")
+    fallback_used = getattr(active_agent_provider, "last_fallback_used", False)
+    fallback_reason = getattr(active_agent_provider, "last_fallback_reason", None)
+    confidence = action.get("confidence", action.get("groundingScore", 1.0)) if isinstance(action, dict) else 1.0
 
     # Validate action against allowlist and schema
     if not isinstance(action, dict) or action.get("action") not in ALLOWED_ACTIONS:
@@ -713,8 +1138,14 @@ async def receive_visual_context(
         "requestId": requestId,
         "action": action,
         "reasoning": reasoning,
-        "agentMode": "demo"
+        "agentMode": "demo" if (provider_type == "demo" or fallback_used) else "gemini",
+        "provider": provider_display_name,
+        "providerType": provider_type,
+        "fallbackUsed": fallback_used,
+        "confidence": confidence
     }
+    if fallback_reason:
+        response_payload["fallbackReason"] = fallback_reason
     if plan is not None:
         response_payload["plan"] = plan
 
