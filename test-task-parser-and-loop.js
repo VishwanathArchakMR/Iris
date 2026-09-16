@@ -155,6 +155,47 @@ console.log("============================================================");
   console.log("[PASS] 7. Connectors ('then click it', 'and then click it') correctly resolve to single click");
 }
 
+// ---------------------------------------------------------------------
+// TEST 8: Multi-page navigation workflow: Open YouTube, search for Java DSA tutorial, open video, play it
+// ---------------------------------------------------------------------
+{
+  const taskYT = "Open YouTube, search for Java DSA tutorial, open the most relevant video, and play it.";
+  const parsedYT = SIHTaskParser.parseTask(taskYT);
+  assert.strictEqual(parsedYT.steps.length, 5, `Expected 5 steps for YouTube workflow, got ${parsedYT.steps.length}`);
+  assert.strictEqual(parsedYT.steps[0].type, "CLICK");
+  assert.strictEqual(parsedYT.steps[0].targetHint, "YouTube");
+  assert.strictEqual(parsedYT.steps[1].type, "FILL");
+  assert.strictEqual(parsedYT.steps[1].fieldHint, "search");
+  assert.strictEqual(parsedYT.steps[1].value, "Java DSA tutorial");
+  assert.strictEqual(parsedYT.steps[2].type, "SUBMIT");
+  assert.strictEqual(parsedYT.steps[2].query, "Java DSA tutorial");
+  assert.strictEqual(parsedYT.steps[3].type, "CLICK");
+  assert.strictEqual(parsedYT.steps[3].isProductSelection, true);
+  assert.strictEqual(parsedYT.steps[3].targetHint, "most relevant video");
+  assert.strictEqual(parsedYT.steps[4].type, "CLICK");
+  assert.strictEqual(parsedYT.steps[4].targetHint, "play");
+  console.log("[PASS] 8. Multi-page workflow -> 5 distinct sequential steps across navigation");
+}
+
+// ---------------------------------------------------------------------
+// TEST 9: Multi-page shopping workflow: Search for iPhone 15 on Amazon, open product, add to cart
+// ---------------------------------------------------------------------
+{
+  const taskAmazon = "Search for iPhone 15 on Amazon, open the most relevant product, and add it to the cart.";
+  const parsedAmazon = SIHTaskParser.parseTask(taskAmazon);
+  assert.strictEqual(parsedAmazon.steps.length, 4, `Expected 4 steps for Amazon workflow, got ${parsedAmazon.steps.length}`);
+  assert.strictEqual(parsedAmazon.steps[0].type, "FILL");
+  assert.strictEqual(parsedAmazon.steps[0].fieldHint, "search");
+  assert.strictEqual(parsedAmazon.steps[0].value, "iPhone 15 on Amazon");
+  assert.strictEqual(parsedAmazon.steps[1].type, "SUBMIT");
+  assert.strictEqual(parsedAmazon.steps[2].type, "CLICK");
+  assert.strictEqual(parsedAmazon.steps[2].isProductSelection, true);
+  assert.strictEqual(parsedAmazon.steps[3].type, "CLICK");
+  assert.strictEqual(parsedAmazon.steps[3].targetHint, "Add to Cart button");
+  assert.strictEqual(parsedAmazon.steps[3].legacyTarget, "ADD_TO_CART_BUTTON");
+  console.log("[PASS] 9. Multi-page shopping workflow -> 4 distinct sequential steps across search and product navigation");
+}
+
 console.log("\n============================================================");
 console.log("ALL FOCUSED VERIFICATION TESTS PASSED CLEANLY!");
 console.log("============================================================");

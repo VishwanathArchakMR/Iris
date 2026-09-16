@@ -30,7 +30,7 @@
    * @returns {string}
    */
   function normalizeText(text) {
-    return (text || "").trim().replace(/\s+/g, " ");
+    return (text || "").trim().replace(/[.!?]+$/, "").replace(/\s+/g, " ");
   }
 
   /**
@@ -40,10 +40,48 @@
    */
   function resolveLegacyClickTarget(text) {
     const lower = text.toLowerCase();
+    if (/button/i.test(lower) && /search/i.test(lower)) return null;
+    if (/cart|add to cart|bag/i.test(lower)) return "ADD_TO_CART_BUTTON";
     if (/login|sign in|log in/i.test(lower)) return "LOGIN_BUTTON";
     if (/next|continue|proceed|step/i.test(lower)) return "NEXT_BUTTON";
     if (/submit/i.test(lower)) return "SUBMIT_BUTTON";
-    if (/search|query|find input/i.test(lower)) return "SEARCH_INPUT";
+    if (/(?:^|\s)(?:search\s+input|search\s+box|query\s+input|find\s+input)(?:$|\s)/i.test(lower)) return "SEARCH_INPUT";
+    return null;
+  }
+
+  /**
+   * Authoritative task search/fill query extractor.
+   * Extracts clean query values (e.g. "iPhone 15", "machine learning", "wireless headphones")
+   * without sentence continuation suffixes or action verbs.
+   * Mirrors backend/main.py extract_task_query_or_value().
+   */
+  function extractTaskQueryOrValue(task) {
+    if (!task || typeof task !== "string") return null;
+    const taskClean = task.trim();
+
+    // 1. Explicit fill patterns: "fill <field> as/with <val>", "enter <val> in <field>"
+    const mAs = taskClean.match(/\b(?:fill|enter|type|set)\b.*?\b(?:as|with|value)\s+['"]?([^'",;]+?)['"]?(?:\s+(?:and|then)\b|[.,;!?]|$)/i);
+    if (mAs) {
+      const val = mAs[1].trim();
+      if (val && !/^(?:the|a|an|box|input|field|button)$/i.test(val)) return val;
+    }
+
+    const mIn = taskClean.match(/\b(?:enter|type|put)\s+['"]?([^'",;]+?)['"]?\s+(?:in|into)\b/i);
+    if (mIn) {
+      const val = mIn[1].trim();
+      if (val && !/^(?:the|a|an|box|input|field|button)$/i.test(val)) return val;
+    }
+
+    // 2. Search query pattern:
+    // Strictly bounds the query before verbs like 'and identify', 'and find', 'and open', 'and click', 'and select', etc.
+    const mSearch = taskClean.match(/(?<!\bfill\s)(?<!\benter\s)(?<!\btype\s)(?<!\bclick\s)(?<!\bfind\s)\bsearch\s+(?:for\s+)?(?!(?:the\s+)?(?:box|input|field|bar|area|button)\b)['"]?([^'",;]+?)['"]?(?:\s+(?:and\s+then|and\s+(?:identify|find|open|click|select|locate|choose)|then\s+(?:identify|find|open|click|select|locate|choose))\b|[.,;!?]|$)/i);
+    if (mSearch) {
+      const val = mSearch[1].trim();
+      if (val && !/^(?:the|a|an|it|this|that|box|input|field|bar|area|button)$/i.test(val)) {
+        return val;
+      }
+    }
+
     return null;
   }
 
@@ -127,7 +165,7 @@
     // 1. Normalize "find/locate/search for/look for [the] <TARGET> and/then/and then click/press/tap/select/use it/that/this/them/that button/that link/the above"
     // -> "click [the] <TARGET>"
     text = text.replace(
-      /\b(?:find|locate|search\s+for|look\s+for)\s+(?:the\s+)?([a-zA-Z0-9_\-\s]+?)\s*(?:,\s*|\s+)(?:and\s+then\s+|and\s+|then\s+)(?:click|press|tap|select|use)\s+(?:on\s+)?(?:it|that|this|them|that\s+button|this\s+button|that\s+link|this\s+link|the\s+above|above|the\s+field|that\s+field|this\s+field)\b/gi,
+      /\b(?:find|locate|search\s+for|look\s+for)\s+(?:the\s+)?((?:(?!\b(?:and|then)\b)[a-zA-Z0-9_\-\s])+?)\s*(?:,\s*(?:and\s+then\s+|and\s+|then\s+)?|\s+(?:and\s+then\s+|and\s+|then\s+))(?:click|press|tap|select|use)\s+(?:on\s+)?(?:it|that|this|them|that\s+button|this\s+button|that\s+link|this\s+link|the\s+above|above|the\s+field|that\s+field|this\s+field)\b/gi,
       (match, target) => {
         const cleanTarget = target.trim();
         return `click ${cleanTarget}`;
@@ -136,7 +174,7 @@
 
     // 2. Normalize "find/locate/search for/look for [the] <TARGET> button/link and/then click/press/tap/select/use it/that/that link/the above"
     text = text.replace(
-      /\b(?:find|locate|search\s+for|look\s+for)\s+(?:the\s+)?([a-zA-Z0-9_\-\s]+?)\s+(?:button|link)\s*(?:,\s*|\s+)(?:and\s+then\s+|and\s+|then\s+)(?:click|press|tap|select|use)\s+(?:on\s+)?(?:it|that|this|them|that\s+button|this\s+button|that\s+link|this\s+link|the\s+above|above|the\s+field|that\s+field|this\s+field)\b/gi,
+      /\b(?:find|locate|search\s+for|look\s+for)\s+(?:the\s+)?((?:(?!\b(?:and|then)\b)[a-zA-Z0-9_\-\s])+?)\s+(?:button|link)\s*(?:,\s*(?:and\s+then\s+|and\s+|then\s+)?|\s+(?:and\s+then\s+|and\s+|then\s+))(?:click|press|tap|select|use)\s+(?:on\s+)?(?:it|that|this|them|that\s+button|this\s+button|that\s+link|this\s+link|the\s+above|above|the\s+field|that\s+field|this\s+field)\b/gi,
       (match, target) => {
         const cleanTarget = target.trim();
         return `click ${cleanTarget} button`;
@@ -145,7 +183,7 @@
 
     // 3. Normalize "[the] <TARGET> [button/link] and then click/press/tap/select/use it" or ", then click it" when preceded by a clickable target
     text = text.replace(
-      /(?:(?:the\s+)?([a-zA-Z0-9_\-]+(?:\s+button|\s+link)?))\s*(?:,\s*|\s+)(?:and\s+then\s+|and\s+|then\s+)(?:click|press|tap|select|use)\s+(?:on\s+)?(?:it|that|this|them|that\s+button|this\s+button|that\s+link|this\s+link|the\s+above|above|the\s+field|that\s+field|this\s+field)\b/gi,
+      /(?:(?:the\s+)?([a-zA-Z0-9_\-]+(?:\s+button|\s+link)?))\s*(?:,\s*(?:and\s+then\s+|and\s+|then\s+)?|\s+(?:and\s+then\s+|and\s+|then\s+))(?:click|press|tap|select|use)\s+(?:on\s+)?(?:it|that|this|them|that\s+button|this\s+button|that\s+link|this\s+link|the\s+above|above|the\s+field|that\s+field|this\s+field)\b/gi,
       (match, target) => {
         const cleanTarget = (target || "").trim();
         if (/^(?:fill|enter|type|put|set|is|as|with|in|into|then|and)$/i.test(cleanTarget)) {
@@ -157,13 +195,126 @@
 
     // 4. Normalize "find/locate/go to [the] search [box/input/field/area] and search for <query>" -> "fill search as <query>"
     text = text.replace(
-      /\b(?:find|locate|go\s+to)\s+(?:the\s+)?(?:search\s+(?:box|input|field|area)|search)\s*(?:,\s*|\s+)(?:and\s+then\s+|and\s+|then\s+)?search\s+(?:for\s+)?(.+)$/i,
+      /\b(?:find|locate|go\s+to)\s+(?:the\s+)?(?:search\s+(?:box|input|field|area)|search)\s*(?:,\s*|\s+)(?:and\s+then\s+|and\s+|then\s+)?search\s+(?:for\s+)?((?:(?!\b(?:and|then)\b)[a-zA-Z0-9_\-\s])+?)(?=(?:,\s*|\s+)(?:and\s+(?:then\s+)?|then\s+)?(?:find|click|press|tap|submit|send)|$)/i,
       (match, query) => {
         return `fill search as ${query.trim()}`;
       }
     );
 
     return text;
+  }
+
+  /**
+   * Section 3: Recognizes generic multi-stage search workflows.
+   * Generic across all search engines and content portals without site-specific rules.
+   *
+   * @param {string} rawTask
+   * @returns {Array<Object>|null} Ordered step descriptors or null
+   */
+  function parseSearchWorkflow(rawTask) {
+    const text = (rawTask || "").trim().replace(/[.!?]+$/, "");
+    if (!text) return null;
+
+    // 0. Optional navigation prefix: e.g. "Open YouTube, search for...", "Go to Amazon and search for..."
+    const navPrefixMatch = text.match(/^(?:open|go\s+to|navigate\s+to|launch|visit)\s+(?:the\s+)?([a-zA-Z0-9_\-]+(?:\s+[a-zA-Z0-9_\-]+)?)\s*(?:,\s*|\s+)(?:and\s+)?(?:then\s+)?(?=search\b)/i);
+    let navTarget = null;
+    let searchTaskText = text;
+    if (navPrefixMatch) {
+      navTarget = navPrefixMatch[1].trim();
+      searchTaskText = text.substring(navPrefixMatch[0].length).trim();
+    }
+
+    // 1. Authoritative search query extraction
+    const query = extractTaskQueryOrValue(searchTaskText);
+    if (!query) return null;
+
+    if (!/\bsearch\b/i.test(searchTaskText)) return null;
+
+    const hasSearchBoxPrefix = /^(?:find|locate|go\s+to|click)\s+(?:on\s+)?(?:the\s+)?(?:search\s+(?:box|input|field|bar|area)|search)(?:\s+(?:in|on|at|of)\s+[a-zA-Z0-9_\-]+)?\b/i.test(searchTaskText);
+    const productMatch = searchTaskText.match(/(?:identify|find|select|choose|open|click|view)\s+(?:on\s+)?(?:the\s+)?((?:(?:most\s+relevant|actual|first|top|selected|chosen)\s+)*(?:product|result|item|listing|video|movie|article|song|track|stream|content))/i);
+    const hasProductOpen = !!productMatch || /\bopen\s+(?:it|that|the\s+product|the\s+result|the\s+video|the\s+item)\b/i.test(searchTaskText);
+    const productTarget = productMatch ? productMatch[1].trim() : "most relevant product";
+
+    let trailingTarget = null;
+    // Trailing pattern A: "open ..., and then find the Add to Cart button, and click it"
+    const trailingFindClickMatch = searchTaskText.match(/(?:open\s+(?:the\s+)?(?:(?:most\s+relevant|actual|first|top|selected|chosen)\s+)*(?:product|result|item|listing|video|movie|article|song|track|stream|content|it)|open\s+it)\s*(?:,\s*|\s+)(?:and\s+)?(?:then\s+)?(?:find|locate|search\s+for)\s+(?:the\s+)?(.+?)\s*(?:,\s*|\s+)(?:and\s+)?(?:then\s+)?(?:click|press|tap)\s+(?:on\s+)?(?:it|that|this)\b/i);
+    if (trailingFindClickMatch) {
+      trailingTarget = trailingFindClickMatch[1].trim();
+    } else {
+      // Trailing pattern B: "open ..., and click [the] <TARGET> [button]"
+      const trailingClickMatch = searchTaskText.match(/(?:open\s+(?:the\s+)?(?:(?:most\s+relevant|actual|first|top|selected|chosen)\s+)*(?:product|result|item|listing|video|movie|article|song|track|stream|content|it)|open\s+it)\s*(?:,\s*|\s+)(?:and\s+)?(?:then\s+)?(?:click|press|tap)\s+(?:on\s+)?(?:the\s+)?([a-zA-Z0-9_\-\s]+?)(?:\s+button)?$/i);
+      if (trailingClickMatch) {
+        trailingTarget = trailingClickMatch[1].trim();
+      } else {
+        // Trailing pattern C: "and play it", "and play", "and click play"
+        const trailingPlayMatch = searchTaskText.match(/(?:,\s*|\s+)(?:and\s+)?(?:then\s+)?(?:click\s+(?:on\s+)?(?:the\s+)?play(?:\s+button|\s+icon)?|play\s+(?:it|the\s+video|that|this)?|start\s+(?:playing|the\s+video)?)\b/i);
+        if (trailingPlayMatch) {
+          trailingTarget = "play";
+        } else {
+          // Trailing pattern D: "and add it to the cart", "and add to cart"
+          const trailingAddToCartMatch = searchTaskText.match(/(?:,\s*|\s+)(?:and\s+)?(?:then\s+)?(?:add\s+(?:it\s+)?to\s+(?:the\s+)?cart|click\s+(?:on\s+)?(?:the\s+)?add\s+to\s+cart(?:\s+button)?)\b/i);
+          if (trailingAddToCartMatch) {
+            trailingTarget = "Add to Cart button";
+          }
+        }
+      }
+    }
+
+    const steps = [];
+
+    // Step 0: Initial navigation step if specified (e.g. "Open YouTube")
+    if (navTarget) {
+      steps.push({
+        type: "CLICK",
+        targetHint: navTarget,
+        legacyTarget: null
+      });
+    }
+
+    // Step 1: Explicit search input locator if task starts with finding/locating search box AND has subsequent product selection
+    if (hasSearchBoxPrefix && hasProductOpen) {
+      steps.push({
+        type: "CLICK",
+        targetHint: "search box",
+        legacyTarget: "SEARCH_INPUT"
+      });
+    }
+
+    // Step 2: Fill search input with the authoritative clean query
+    steps.push({
+      type: "FILL",
+      fieldHint: "search",
+      value: query
+    });
+
+    // Step 3: Submit search
+    steps.push({
+      type: "SUBMIT",
+      targetHint: "search",
+      query: query
+    });
+
+    // Step 4: Product / search result selection
+    if (hasProductOpen) {
+      steps.push({
+        type: "CLICK",
+        targetHint: productTarget,
+        query: query,
+        isProductSelection: true
+      });
+    }
+
+    // Step 5: Trailing action (e.g. "find the Add to Cart button, and click it", "play it")
+    if (trailingTarget) {
+      const cleanTrailing = trailingTarget.trim();
+      steps.push({
+        type: "CLICK",
+        targetHint: cleanTrailing,
+        legacyTarget: resolveLegacyClickTarget(cleanTrailing)
+      });
+    }
+
+    return steps.length > 0 ? steps : null;
   }
 
   /**
@@ -174,6 +325,41 @@
    * @returns {Object} Structured intent with sanitized plan and private local values
    */
   function parseTask(rawTask) {
+    if (!rawTask || !rawTask.trim()) {
+      return createNoneResult("Empty task");
+    }
+
+    // Section 3: Recognize generic search workflows first
+    // Multi-page / repeated search workflow check:
+    // If the task contains multiple sequential search intents across navigation (e.g. Google -> open YouTube -> search on YouTube),
+    // parse each stage independently and concatenate their steps in order.
+    const searchOccurrences = (rawTask.match(/\bsearch\b/gi) || []).length;
+    if (searchOccurrences >= 2) {
+      const multiSearchSplitPattern = /(?:,\s*then|\s+then|\s*;\s*then|\s*,\s*and\s+then|\s+and\s+then|\s+after\s+opening\s+(?:it|the\s+result|the\s+product|that|the\s+video|the\s+item))\s+(?=(?:find|locate|go\s+to|click|search|on\b|in\b))/i;
+      const searchParts = rawTask.trim().split(multiSearchSplitPattern);
+      if (searchParts.length > 1 && searchParts.every((p) => /\bsearch\b/i.test(p))) {
+        let combinedSteps = [];
+        let allValid = true;
+        for (const part of searchParts) {
+          const stageSteps = parseSearchWorkflow(part.trim());
+          if (stageSteps && stageSteps.length > 0) {
+            combinedSteps = combinedSteps.concat(stageSteps);
+          } else {
+            allValid = false;
+            break;
+          }
+        }
+        if (allValid && combinedSteps.length > 0) {
+          return buildResultFromSteps(combinedSteps);
+        }
+      }
+    }
+
+    const searchWorkflowSteps = parseSearchWorkflow(rawTask);
+    if (searchWorkflowSteps && searchWorkflowSteps.length > 0) {
+      return buildResultFromSteps(searchWorkflowSteps);
+    }
+
     const task = normalizeTaskPhrasing(rawTask);
     if (!task) {
       return createNoneResult("Empty task");
@@ -377,8 +563,8 @@
       ]);
     }
 
-    // 6c. Standard CLICK: "click add to cart", "press submit", "click continue", "tap on search"
-    const clickMatch = task.match(/^(?:click|press|tap)\s+(?:on\s+)?(?:the\s+)?([a-zA-Z0-9_\-\s]+?)(?:\s+button|\s+link)?$/i);
+    // 6c. Standard CLICK / FIND: "click add to cart", "find english", "press submit", "click continue", "tap on search"
+    const clickMatch = task.match(/^(?:click|press|tap|find|locate)\s+(?:on\s+)?(?:the\s+)?([a-zA-Z0-9_\-\s]+?)(?:\s+button|\s+link)?$/i);
     if (clickMatch) {
       const targetHint = clickMatch[1].trim();
       // Never create a standalone target named "it", "this", "that", "them", "the button", "the above", etc.
@@ -449,6 +635,16 @@
         if (normHint) {
           localValues[normHint] = step.value;
         }
+      } else if (step.type === "SUBMIT") {
+        sanitizedPlan.push({
+          type: "SUBMIT",
+          targetHint: step.targetHint || "search",
+          stepId: idx
+        });
+        if (step.query) {
+          localValues["search_query"] = step.query;
+          localValues[idx] = step.query;
+        }
       } else if (step.type === "CLICK") {
         sanitizedPlan.push({
           type: "CLICK",
@@ -456,6 +652,9 @@
           legacyTarget: step.legacyTarget || null,
           stepId: idx
         });
+        if (step.query) {
+          localValues["search_query"] = step.query;
+        }
       } else if (step.type === "SCROLL") {
         sanitizedPlan.push({
           type: "SCROLL",
@@ -500,6 +699,7 @@
 
   return {
     parseTask,
+    extractTaskQueryOrValue,
     resolveLegacyClickTarget,
     DEFAULT_SCROLL_AMOUNT
   };

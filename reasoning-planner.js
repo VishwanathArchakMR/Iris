@@ -110,6 +110,27 @@
       };
     }
 
+    // 1b. SUBMIT Action: Low risk for search submissions; High risk for consequential actions (checkout, delete, payment)
+    if (actionType === "SUBMIT") {
+      const isSearch = targetLabel.includes("search") || targetLabel.includes("query") || !targetLabel;
+      if (isSearch) {
+        return {
+          risk: RISK_LEVELS.LOW,
+          level: RISK_LEVELS.LOW,
+          requiresApproval: false,
+          reason: "Search submission. Autonomous execution permitted.",
+          rationale: "Search submission. Autonomous execution permitted."
+        };
+      }
+      return {
+        risk: RISK_LEVELS.HIGH,
+        level: RISK_LEVELS.HIGH,
+        requiresApproval: true,
+        reason: `Consequential form submission ('${targetLabel}'). Human approval required.`,
+        rationale: `Consequential form submission ('${targetLabel}'). Human approval required.`
+      };
+    }
+
     // 2. SCROLL Action: Low risk bounded viewport movement
     if (actionType === "SCROLL") {
       return {
@@ -280,6 +301,29 @@
         });
         const riskLabel = riskAssessment.requiresApproval ? "HIGH Risk - Approval Required" : `${riskAssessment.level} Risk - Autonomous`;
         reasoningTrace.push(`Step ${idx + 1} planned: CLICK '${targetLabel}' [${riskLabel}]`);
+      } else if (stepType === "SUBMIT") {
+        const targetHint = rawStep.targetHint || "search";
+        riskAssessment = classifyActionRisk({ action: "SUBMIT", targetLabel: targetHint });
+        if (riskAssessment.requiresApproval) {
+          hasHighRiskStep = true;
+        }
+        steps.push({
+          id: idx + 1,
+          stepId: idx,
+          type: "SUBMIT",
+          target: targetHint,
+          targetHint: targetHint,
+          query: rawStep.query || null,
+          risk: riskAssessment.risk || riskAssessment.level,
+          level: riskAssessment.level,
+          requiresApproval: riskAssessment.requiresApproval,
+          approvalPrompt: `Execute action: SUBMIT → ${targetHint}`,
+          reasoning: `Step ${idx + 1}: Submit ${targetHint}${rawStep.query ? " for '" + rawStep.query + "'" : ""}.`,
+          preconditions: ["search_field_filled"],
+          postconditions: ["search_results_verified"]
+        });
+        const riskLabel = riskAssessment.requiresApproval ? "HIGH Risk - Approval Required" : `${riskAssessment.level} Risk - Autonomous`;
+        reasoningTrace.push(`Step ${idx + 1} planned: SUBMIT '${targetHint}' [${riskLabel}]`);
       } else if (stepType === "SCROLL") {
         riskAssessment = classifyActionRisk({ action: "SCROLL" });
         steps.push({
@@ -352,6 +396,20 @@
       }
     }
 
+    // 1b. Search submission check: Submit requires prior search query fill
+    if (step.preconditions && step.preconditions.includes("search_field_filled")) {
+      const hasPriorFill = completedStepsHistory.some(
+        (prev) => prev.action && (prev.action.action === "FILL" || prev.action.action === "FILL_FORM") && (prev.executed || prev.status === "success")
+      );
+      if (!hasPriorFill) {
+        return {
+          valid: false,
+          satisfied: false,
+          reason: "Precondition failed: Cannot execute search submission before query has been filled."
+        };
+      }
+    }
+
     // 2. Human approval check for high-risk actions
     if (step.requiresApproval) {
       if (!approvalToken || !approvalToken.approved) {
@@ -398,7 +456,7 @@
     }
 
     const actionType = (agentAction.action || "").toUpperCase();
-    const ALLOWED_ACTIONS = new Set(["CLICK", "SCROLL", "FILL", "NONE"]);
+    const ALLOWED_ACTIONS = new Set(["CLICK", "SCROLL", "FILL", "FILL_FORM", "SUBMIT", "NONE"]);
     if (!ALLOWED_ACTIONS.has(actionType)) {
       return {
         allowed: false,
@@ -507,6 +565,15 @@
         reason: isVerifiedLocally
           ? "Input field state verified locally."
           : "Local value verification failed on target control."
+      };
+    }
+
+    if (stepType === "SUBMIT") {
+      return {
+        verified: !!executionResult.executed,
+        reason: executionResult.executed
+          ? "Search submission executed and verified."
+          : (executionResult.reason || "Submission failed.")
       };
     }
 

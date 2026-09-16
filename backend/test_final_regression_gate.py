@@ -18,12 +18,21 @@ the adversarial prompt injection protections from Section 21:
   TEST 12: failed target -> bounded recovery / replanning
 """
 
+import os
+import sys
 import asyncio
 import io
 import json
 import pytest
 import subprocess
 from fastapi import UploadFile, HTTPException
+
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
+for p in [CURRENT_DIR, PROJECT_ROOT]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
 from main import app, DemoAgentProvider, receive_visual_context, assert_no_forbidden_value_keys
 
 def run_node(script: str):
@@ -32,7 +41,8 @@ def run_node(script: str):
         ["node", "-e", script],
         capture_output=True,
         text=True,
-        check=True
+        check=True,
+        cwd=PROJECT_ROOT
     )
     return json.loads(res.stdout)
 

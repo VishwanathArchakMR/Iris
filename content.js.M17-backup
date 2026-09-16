@@ -1,0 +1,1558 @@
+/**
+ * content.js - Content script injected into web pages
+ * Milestones 1–6: Page metadata capture, local PII redaction, and safe whitelisted execution (CLICK, SCROLL).
+ */
+
+// Explicit, local whitelist mappings for permitted actions.
+// Security: Restricts execution strictly to known targets and prevents arbitrary code injection.
+const ACTION_TARGET_MAP = {
+  "SUBMIT_BUTTON": "#submit-button",
+  "LOGIN_BUTTON": "#login-button",
+  "NEXT_BUTTON": "#next-button",
+  "SEARCH_INPUT": "#search-input"
+};
+
+const SCROLL_TARGET_MAP = {
+  "PAGE": "window"
+};
+
+// Hardcoded safe numeric boundaries for SCROLL actions
+const MIN_SCROLL_AMOUNT = 0;
+const MAX_SCROLL_AMOUNT = 2000;
+
+/**
+ * Milestone 14: Assigns safe pre-registered semantic tags based purely on visible element type and label.
+ * Local pattern-matching only; never reads or inspects .value.
+ *
+ * @param {string} type - UI element type ("button", "link", "input", etc.)
+ * @param {string} label - Visible text or placeholder string
+ * @param {Element} [el] - DOM element
+ * @returns {string|null} Pre-registered semantic tag or null
+ */
+function getSemanticTag(type, label, el = null) {
+  const normLabel = (label || "").toLowerCase();
+  const elId = (el && el.id ? el.id : "").toLowerCase();
+  const elName = (el && el.getAttribute ? (el.getAttribute("name") || "") : "").toLowerCase();
+
+  if (type === "button" || type === "link") {
+    if (/submit/i.test(normLabel) || /submit/i.test(elId) || /submit/i.test(elName)) {
+      return "SUBMIT_BUTTON";
+    }
+    if (/login|sign in|log in/i.test(normLabel) || /login/i.test(elId) || /login/i.test(elName)) {
+      return "LOGIN_BUTTON";
+    }
+    if (/next|continue|proceed/i.test(normLabel) || /next/i.test(elId) || /next/i.test(elName)) {
+      return "NEXT_BUTTON";
+    }
+  } else if (type === "input") {
+    if (/search/i.test(normLabel) || /search/i.test(elId) || /search/i.test(elName) || (el && el.type === "search")) {
+      return "SEARCH_INPUT";
+    }
+  }
+  return null;
+}
+
+/**
+ * Normalizes label text for safe comparison.
+ * Trims punctuation, colons, asterisks, and excessive whitespace.
+ * @param {string} s
+ * @returns {string}
+ */
+function normalizeLabel(s) {
+  return (s || "")
+    .toLowerCase()
+    .replace(/[:*#_\-\/\\]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Checks if two element labels match with fuzzy tolerance.
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+function labelsMatch(a, b) {
+  const na = normalizeLabel(a);
+  const nb = normalizeLabel(b);
+  if (!na || !nb) return false;
+  return na === nb || na.startsWith(nb) || nb.startsWith(na) || na.includes(nb) || nb.includes(na);
+}
+
+/**
+ * Safely executes a permitted action on the page if explicitly whitelisted.
+ *
+ * @param {Object} actionPayload - { action: string, target?: string, amount?: number, targetIndex?: number, targetType?: string, targetLabel?: string, localValue?: string }
+ * @returns {Object} Execution result summary
+ */
+function executeAction(actionPayload) {
+  if (!actionPayload || typeof actionPayload !== "object") {
+    return { executed: false, reason: "Invalid action payload" };
+  }
+
+  const { action, target, amount } = actionPayload;
+
+  // Explicit action allowlist check: exactly {"CLICK", "SCROLL", "FILL", "FILL_FORM", "AUTOFILL", "SUBMIT"} permitted
+  const ALLOWED_ACTIONS = new Set(["CLICK", "SCROLL", "FILL", "FILL_FORM", "AUTOFILL", "SUBMIT"]);
+  if (!ALLOWED_ACTIONS.has(action)) {
+    return {
+      executed: false,
+      reason: "Unsupported or unknown action/target"
+    };
+  }
+
+  // 1. CLICK Action Execution (Milestone 5, 14 & 15 Generalized Grounding)
+  if (action === "CLICK") {
+    // Generalized grounded path: payload has targetIndex
+    if (typeof actionPayload.targetIndex === "number") {
+      const { targetIndex, targetType, targetLabel } = actionPayload;
+
+      // Always re-scan the LIVE DOM at execution time — never trust a stale index/bbox
+      const freshElements = extractVisualElementsWithNodes();
+
+      // Check for stale target element
+      if (typeof targetIndex === "number" && freshElements[targetIndex]) {
+        const atIdx = freshElements[targetIndex];
+        if (atIdx.node && !atIdx.node.isConnected) {
+          return {
+            executed: false,
+            reason: "Stale target: element has been removed from document"
+          };
+        }
+      }
+
+      // Check for ambiguous target if multiple elements share identical label
+      const matchingCandidates = freshElements.filter(
+        (el) => el.node && el.node.isConnected && (el.type === targetType || ["button", "link", "input", "element"].includes(el.type)) && labelsMatch(el.label, targetLabel)
+      );
+      const exactMatches = matchingCandidates.filter(c => normalizeLabel(c.label) === normalizeLabel(targetLabel));
+      if (exactMatches.length > 1 && (typeof targetIndex !== "number" || !freshElements[targetIndex] || !labelsMatch(freshElements[targetIndex].label, targetLabel))) {
+        return {
+          executed: false,
+          reason: "Ambiguous target: multiple elements with identical label found on page"
+        };
+      }
+
+      let matched = null;
+
+      // 1) Best case: index still points at an element of matching type+label.
+      if (freshElements[targetIndex]
+          && freshElements[targetIndex].node
+          && freshElements[targetIndex].node.isConnected
+          && labelsMatch(freshElements[targetIndex].label, targetLabel)) {
+        matched = freshElements[targetIndex];
+      }
+
+      // 2) Drift fallback: page changed since the perception snapshot — search by matching candidates.
+      if (!matched && matchingCandidates.length === 1) {
+        matched = matchingCandidates[0];
+      }
+
+      if (!matched || !matched.node || !matched.node.isConnected) {
+        return {
+          executed: false,
+          reason: "Grounded target element not found or drifted beyond safety threshold"
+        };
+      }
+
+      // Safety check: reject disabled / read-only targets
+      if (matched.node.disabled || matched.node.getAttribute?.("aria-disabled") === "true") {
+        return {
+          executed: false,
+          reason: "Target element is disabled or read-only"
+        };
+      }
+
+      try {
+        // Scroll target into view if needed
+        if (typeof matched.node.scrollIntoView === "function") {
+          try {
+            matched.node.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+          } catch (_) {}
+        }
+
+        if (matched.node.tagName && matched.node.tagName.toLowerCase() === "input") {
+          matched.node.focus?.();
+        }
+        matched.node.click();
+        return {
+          executed: true,
+          action: "CLICK",
+          targetType: matched.type || targetType,
+          targetLabel: matched.label || targetLabel,
+          groundedIndex: targetIndex
+        };
+      } catch (err) {
+        return { executed: false, reason: `Error during grounded click execution: ${err.message}` };
+      }
+    }
+
+    // Existing legacy path (untouched): action.target is a string key in ACTION_TARGET_MAP.
+    if (!target || !Object.prototype.hasOwnProperty.call(ACTION_TARGET_MAP, target)) {
+      return {
+        executed: false,
+        reason: "Unsupported or unknown action/target"
+      };
+    }
+
+    const selector = ACTION_TARGET_MAP[target];
+    let element = document.querySelector(selector);
+
+    // Fallback: search visible DOM elements matching the pre-registered safe semantic tag
+    if (!element) {
+      const candidates = document.querySelectorAll("button, a[href], input, [role='button']");
+      for (const cand of candidates) {
+        if (!getVisibleRect(cand)) continue;
+        const candType = cand.tagName.toLowerCase() === "a" ? "link" : (cand.tagName.toLowerCase() === "input" ? "input" : "button");
+        const candLabel = (cand.innerText || cand.placeholder || cand.getAttribute("aria-label") || "").trim();
+        if (getSemanticTag(candType, candLabel, cand) === target) {
+          element = cand;
+          break;
+        }
+      }
+    }
+
+    if (!element) {
+      return {
+        executed: false,
+        reason: "Element not found on page"
+      };
+    }
+
+    // Safety check: reject disabled legacy targets
+    if (element.disabled || element.getAttribute?.("aria-disabled") === "true") {
+      return {
+        executed: false,
+        reason: "Target element is disabled or read-only"
+      };
+    }
+
+    try {
+      if (typeof element.scrollIntoView === "function") {
+        try {
+          element.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+        } catch (_) {}
+      }
+      if (element.tagName.toLowerCase() === "input") {
+        element.focus();
+        element.click();
+      } else {
+        element.click();
+      }
+      return {
+        executed: true,
+        action: "CLICK",
+        target: target
+      };
+    } catch (err) {
+      return {
+        executed: false,
+        reason: `Error during click execution: ${err.message}`
+      };
+    }
+  }
+
+  // 2. FILL Action Execution (Milestone 16 Generic Safe Form Fill)
+  if (action === "FILL") {
+    const { targetIndex, targetType, targetLabel } = actionPayload;
+    // Protocol: value is NOT part of the message from backend; popup.js passes locally-held value via localValue
+    const fillValue = actionPayload.localValue !== undefined
+      ? actionPayload.localValue
+      : (actionPayload.value !== undefined ? actionPayload.value : "");
+
+    // 1. Re-scan live DOM at execution time
+    const freshElements = extractVisualElementsWithNodes();
+
+    // Check for stale target element
+    if (typeof targetIndex === "number" && freshElements[targetIndex]) {
+      const atIdx = freshElements[targetIndex];
+      if (atIdx.node && !atIdx.node.isConnected) {
+        return {
+          executed: false,
+          reason: "Stale target: element has been removed from document"
+        };
+      }
+    }
+
+    // 2. Re-ground target by targetType + label match
+    const matchingCandidates = freshElements.filter(
+      (el) => el.node && el.node.isConnected &&
+        (el.type === targetType || ["input", "textarea", "select"].includes((el.node.tagName || "").toLowerCase())) &&
+        labelsMatch(el.label, targetLabel)
+    );
+
+    // 4. Reject if ambiguous (more than one equally strong match)
+    const exactMatches = matchingCandidates.filter(c => normalizeLabel(c.label) === normalizeLabel(targetLabel));
+    if (exactMatches.length > 1 && (typeof targetIndex !== "number" || !freshElements[targetIndex] || !labelsMatch(freshElements[targetIndex].label, targetLabel))) {
+      return {
+        executed: false,
+        reason: "Ambiguous target: multiple elements with identical label found on page"
+      };
+    }
+
+    let matched = null;
+    // Best case: targetIndex still points at matching element
+    if (typeof targetIndex === "number" && freshElements[targetIndex]) {
+      const cand = freshElements[targetIndex];
+      if (cand.node && cand.node.isConnected && labelsMatch(cand.label, targetLabel)) {
+        matched = cand;
+      }
+    }
+
+    // Drift fallback: single unique candidate
+    if (!matched && matchingCandidates.length === 1) {
+      matched = matchingCandidates[0];
+    }
+
+    if (!matched || !matched.node || !matched.node.isConnected) {
+      return {
+        executed: false,
+        reason: "Grounded target element not found or drifted beyond safety threshold"
+      };
+    }
+
+    const el = matched.node;
+    const tagName = (el.tagName || "").toLowerCase();
+    const isInput = tagName === "input";
+    const isTextarea = tagName === "textarea";
+    const isContentEditable = !!(el.isContentEditable || (el.getAttribute && el.getAttribute("contenteditable") === "true"));
+    const isRoleTextbox = !!(el.getAttribute && el.getAttribute("role") === "textbox");
+
+    // 3. Verify matched node is an actual fillable control
+    if (!isInput && !isTextarea && !isContentEditable && !isRoleTextbox) {
+      return {
+        executed: false,
+        reason: "Target element is not a fillable form control"
+      };
+    }
+
+    // 6. Refuse to fill sensitive credentials fields (type="password")
+    if (isInput && (el.type || "").toLowerCase() === "password") {
+      return {
+        executed: false,
+        reason: "Refused to fill sensitive credentials field (type=password)"
+      };
+    }
+
+    // Safety check: reject disabled or read-only targets
+    if (el.disabled || el.readOnly || (el.getAttribute && el.getAttribute("aria-disabled") === "true") || (el.getAttribute && el.getAttribute("readonly") !== null)) {
+      return {
+        executed: false,
+        reason: "Target element is disabled or read-only"
+      };
+    }
+
+    // Scroll element into view if needed
+    if (typeof el.scrollIntoView === "function") {
+      try {
+        el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+      } catch (_) {}
+    }
+
+    // 5. Set value via native property setter + dispatch input/change events
+    try {
+      if (isInput || isTextarea) {
+        const proto = isInput
+          ? (typeof window !== "undefined" && window.HTMLInputElement ? window.HTMLInputElement.prototype : Object.getPrototypeOf(el))
+          : (typeof window !== "undefined" && window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : Object.getPrototypeOf(el));
+        const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+        if (nativeSetter) {
+          nativeSetter.call(el, String(fillValue));
+        } else {
+          el.value = String(fillValue);
+        }
+        el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+      } else if (isContentEditable || isRoleTextbox) {
+        if (typeof el.focus === "function") el.focus();
+        el.textContent = String(fillValue);
+        el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+      }
+
+      // 7. Verify locally afterward (never return actual value string in result object)
+      let verified = false;
+      if (isInput || isTextarea) {
+        verified = el.value === String(fillValue);
+      } else if (isContentEditable || isRoleTextbox) {
+        verified = el.textContent === String(fillValue) || el.innerText === String(fillValue);
+      }
+
+      return {
+        executed: true,
+        action: "FILL",
+        targetType: matched.type,
+        targetLabel: matched.label,
+        groundedIndex: typeof targetIndex === "number" ? targetIndex : freshElements.indexOf(matched),
+        verified: verified
+      };
+    } catch (fillErr) {
+      return {
+        executed: false,
+        reason: `Error during fill execution: ${fillErr.message}`
+      };
+    }
+  }
+
+  // 2b. FILL_FORM Action Execution (Simultaneous Whole-Form Autofill using Local Profile)
+  if (action === "FILL_FORM" || action === "AUTOFILL") {
+    const profile = actionPayload.profile || (typeof window !== "undefined" && window.SIHFormProfile ? window.SIHFormProfile.getFormProfile() : null) || {
+      fullName: "Sanketh Mallikarjuna",
+      name: "Sanketh Mallikarjuna",
+      email: "sanketh@example.com",
+      phone: "+1-555-0199",
+      organization: "SIH Visual Perception Labs",
+      address: "123 Innovation Way, Tech Park",
+      city: "Bengaluru",
+      state: "Karnataka",
+      zip: "560001",
+      comments: "Automated visual perception agent verification test."
+    };
+
+    const freshElements = extractVisualElementsWithNodes();
+    const fieldsFilled = [];
+
+    for (let idx = 0; idx < freshElements.length; idx++) {
+      const item = freshElements[idx];
+      if (!item || !item.node || !item.node.isConnected) continue;
+
+      const el = item.node;
+      const tagName = (el.tagName || "").toLowerCase();
+      const elType = (el.type || "").toLowerCase();
+      const isInput = tagName === "input";
+      const isTextarea = tagName === "textarea";
+      const isContentEditable = !!(el.isContentEditable || (el.getAttribute && el.getAttribute("contenteditable") === "true"));
+      const isRoleTextbox = !!(el.getAttribute && el.getAttribute("role") === "textbox");
+
+      if (!isInput && !isTextarea && !isContentEditable && !isRoleTextbox) continue;
+
+      // Refuse sensitive password fields strictly
+      if (isInput && elType === "password") continue;
+      // Skip non-fillable inputs (buttons, submit, reset, hidden)
+      if (isInput && ["submit", "button", "reset", "hidden", "image"].includes(elType)) continue;
+      // Skip disabled or read-only controls
+      if (el.disabled || el.readOnly || (el.getAttribute && el.getAttribute("aria-disabled") === "true") || (el.getAttribute && el.getAttribute("readonly") !== null)) continue;
+
+      let fillVal = null;
+      let matchedKey = null;
+
+      if (typeof window !== "undefined" && window.SIHFormProfile && typeof window.SIHFormProfile.matchFieldToProfile === "function") {
+        const matchResult = window.SIHFormProfile.matchFieldToProfile(item, profile);
+        if (matchResult && matchResult.value) {
+          fillVal = matchResult.value;
+          matchedKey = matchResult.key;
+        }
+      }
+
+      if (!fillVal) {
+        const normLabel = normalizeLabel(item.label || el.placeholder || el.name || el.id || "");
+        if (normLabel.includes("name")) { fillVal = profile.fullName || profile.name; matchedKey = "name"; }
+        else if (normLabel.includes("email") || normLabel.includes("mail")) { fillVal = profile.email; matchedKey = "email"; }
+        else if (normLabel.includes("phone") || normLabel.includes("mobile") || normLabel.includes("contact")) { fillVal = profile.phone; matchedKey = "phone"; }
+        else if (normLabel.includes("org") || normLabel.includes("company")) { fillVal = profile.organization || profile.company; matchedKey = "organization"; }
+        else if (normLabel.includes("address") || normLabel.includes("street")) { fillVal = profile.address || profile.street; matchedKey = "address"; }
+        else if (normLabel.includes("city") || normLabel.includes("town")) { fillVal = profile.city; matchedKey = "city"; }
+        else if (normLabel.includes("state") || normLabel.includes("province")) { fillVal = profile.state; matchedKey = "state"; }
+        else if (normLabel.includes("zip") || normLabel.includes("postal") || normLabel.includes("pin")) { fillVal = profile.zip || profile.postalCode; matchedKey = "zip"; }
+        else if (normLabel.includes("comment") || normLabel.includes("message") || normLabel.includes("feedback") || normLabel.includes("notes")) { fillVal = profile.comments || profile.message; matchedKey = "comments"; }
+      }
+
+      if (fillVal !== null && fillVal !== undefined) {
+        try {
+          if (isInput || isTextarea) {
+            const proto = isInput
+              ? (typeof window !== "undefined" && window.HTMLInputElement ? window.HTMLInputElement.prototype : Object.getPrototypeOf(el))
+              : (typeof window !== "undefined" && window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : Object.getPrototypeOf(el));
+            const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+            if (nativeSetter) {
+              nativeSetter.call(el, String(fillVal));
+            } else {
+              el.value = String(fillVal);
+            }
+            el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+          } else if (isContentEditable || isRoleTextbox) {
+            el.textContent = String(fillVal);
+            el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+          }
+
+          let verified = false;
+          if (isInput || isTextarea) {
+            verified = el.value === String(fillVal);
+          } else if (isContentEditable || isRoleTextbox) {
+            verified = el.textContent === String(fillVal) || el.innerText === String(fillVal);
+          }
+
+          fieldsFilled.push({
+            targetIndex: idx,
+            targetType: item.type,
+            targetLabel: item.label || el.placeholder || el.name || `Field #${idx}`,
+            matchedKey: matchedKey,
+            verified: verified
+          });
+        } catch (e) {
+          console.warn("Error filling field in simultaneous pass:", e);
+        }
+      }
+    }
+
+    return {
+      executed: fieldsFilled.length > 0,
+      action: "FILL_FORM",
+      fieldsFilled: fieldsFilled,
+      count: fieldsFilled.length,
+      verified: fieldsFilled.length > 0 && fieldsFilled.every(f => f.verified),
+      simultaneous: true
+    };
+  }
+
+  // 3. SCROLL Action Execution (Milestone 6)
+  if (action === "SCROLL") {
+    if (!target || !Object.prototype.hasOwnProperty.call(SCROLL_TARGET_MAP, target)) {
+      return {
+        executed: false,
+        reason: "Unsupported or unknown action/target"
+      };
+    }
+
+    // Validate that amount is numeric and falls within the hardcoded safe range
+    if (typeof amount !== "number" || isNaN(amount) || amount < MIN_SCROLL_AMOUNT || amount > MAX_SCROLL_AMOUNT) {
+      return {
+        executed: false,
+        reason: "Invalid or unsupported scroll amount"
+      };
+    }
+
+    try {
+      window.scrollBy({ top: amount, behavior: "smooth" });
+      return {
+        executed: true,
+        action: "SCROLL",
+        target: target,
+        amount: amount
+      };
+    } catch (err) {
+      return {
+        executed: false,
+        reason: `Error during scroll execution: ${err.message}`
+      };
+    }
+  }
+
+  // 4. SUBMIT Action Execution (Milestone 13 Cross-Website Robustness Patch)
+  // Section 4 Submission Priority:
+  // 1. associated form submission if safely available
+  // 2. existing search/submit button
+  // 3. keyboard Enter if current execution system safely supports it
+  if (action === "SUBMIT") {
+    const freshElements = extractVisualElementsWithNodes();
+    let targetInput = null;
+
+    // A. If targetIndex specified and points to a live node
+    if (typeof actionPayload.targetIndex === "number" && freshElements[actionPayload.targetIndex]) {
+      const cand = freshElements[actionPayload.targetIndex];
+      if (cand.node && cand.node.isConnected) {
+        targetInput = cand.node;
+      }
+    }
+
+    // B. If document.activeElement is an input/textarea
+    if (!targetInput && document.activeElement && ["input", "textarea"].includes((document.activeElement.tagName || "").toLowerCase())) {
+      targetInput = document.activeElement;
+    }
+
+    // C. Search DOM for the primary search input
+    if (!targetInput) {
+      for (const item of freshElements) {
+        if (!item || !item.node || !item.node.isConnected) continue;
+        const n = item.node;
+        const tag = (n.tagName || "").toLowerCase();
+        if (tag !== "input" && tag !== "textarea") continue;
+        const lNorm = normalizeLabel(item.label || n.placeholder || n.name || n.id || "");
+        if (lNorm.includes("search") || lNorm.includes("query") || n.type === "search" || item.semanticTag === "SEARCH_INPUT") {
+          targetInput = n;
+          break;
+        }
+      }
+    }
+
+    // Fallback: any visible text input on page
+    if (!targetInput) {
+      for (const item of freshElements) {
+        if (!item || !item.node || !item.node.isConnected) continue;
+        const n = item.node;
+        if ((n.tagName || "").toLowerCase() === "input" && ["text", "search", ""].includes((n.type || "").toLowerCase()) && !n.disabled && !n.readOnly) {
+          targetInput = n;
+          break;
+        }
+      }
+    }
+
+    let submissionMethod = "none";
+    let submitted = false;
+
+    // Strategy 1: Associated form submission if safely available
+    if (targetInput) {
+      const form = targetInput.form || (typeof targetInput.closest === "function" ? targetInput.closest("form") : null);
+      if (form) {
+        try {
+          if (typeof form.requestSubmit === "function") {
+            form.requestSubmit();
+            submissionMethod = "form.requestSubmit";
+            submitted = true;
+          } else if (typeof form.submit === "function") {
+            form.submit();
+            submissionMethod = "form.submit";
+            submitted = true;
+          }
+        } catch (formErr) {
+          console.warn("[SIH26171] form.requestSubmit notice:", formErr);
+        }
+      }
+    }
+
+    // Strategy 2: Existing search/submit button
+    if (!submitted) {
+      let submitBtn = null;
+      if (targetInput) {
+        const form = targetInput.form || (typeof targetInput.closest === "function" ? targetInput.closest("form") : null);
+        if (form) {
+          submitBtn = form.querySelector("button[type='submit'], input[type='submit'], button");
+        }
+      }
+      if (!submitBtn) {
+        for (const item of freshElements) {
+          if (!item || !item.node || !item.node.isConnected) continue;
+          const n = item.node;
+          if (n.disabled || n.getAttribute?.("aria-disabled") === "true") continue;
+          const lNorm = normalizeLabel(item.label || n.value || n.getAttribute?.("aria-label") || "");
+          if (item.type === "button" && (lNorm.includes("search") || lNorm.includes("submit") || item.semanticTag === "SUBMIT_BUTTON")) {
+            submitBtn = n;
+            break;
+          }
+        }
+      }
+
+      if (submitBtn) {
+        try {
+          submitBtn.click();
+          submissionMethod = "search_button_click";
+          submitted = true;
+        } catch (btnErr) {
+          console.warn("[SIH26171] submit button click notice:", btnErr);
+        }
+      }
+    }
+
+    // Strategy 3: Keyboard Enter if current execution system safely supports it
+    // Dispatch Enter on the search input to ensure SPA / dynamic handlers activate
+    if (targetInput) {
+      try {
+        targetInput.focus?.();
+        const enterOpts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+        targetInput.dispatchEvent(new KeyboardEvent("keydown", enterOpts));
+        targetInput.dispatchEvent(new KeyboardEvent("keypress", enterOpts));
+        targetInput.dispatchEvent(new KeyboardEvent("keyup", enterOpts));
+        if (!submitted) {
+          submissionMethod = "keyboard_enter";
+          submitted = true;
+        } else {
+          submissionMethod += "+keyboard_enter";
+        }
+      } catch (keyErr) {
+        console.warn("[SIH26171] keyboard Enter dispatch notice:", keyErr);
+      }
+    }
+
+    if (submitted) {
+      return {
+        executed: true,
+        action: "SUBMIT",
+        target: actionPayload.target || "search",
+        targetType: "input",
+        targetLabel: targetInput ? (targetInput.name || targetInput.id || "search input") : "search",
+        submissionMethod: submissionMethod,
+        verified: true
+      };
+    }
+
+    return {
+      executed: false,
+      reason: "No form, submit button, or input found to submit search."
+    };
+  }
+
+  // 5. Unknown / unsupported action type
+  return {
+    executed: false,
+    reason: "Unsupported or unknown action/target"
+  };
+}
+
+/**
+ * Reusable helper to validate element visibility and obtain its bounding client rect.
+ * Filters out zero-size, CSS-hidden, or off-screen elements.
+ *
+ * @param {Element} el - DOM element to check
+ * @returns {DOMRect|null} Valid visible rect or null if element is hidden
+ */
+function getVisibleRect(el) {
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    return null;
+  }
+
+  const style = window.getComputedStyle(el);
+  if (style.display === "none" || style.visibility === "hidden" || parseFloat(style.opacity) === 0) {
+    return null;
+  }
+
+  if (rect.x < -1000 || rect.y < -1000) {
+    return null;
+  }
+
+  return rect;
+}
+
+/**
+ * Generic DOM visual perception selector.
+ * Detects visible buttons, links, inputs, textareas, selects, ARIA interactive roles, and headings.
+ */
+const VISUAL_SELECTOR = "button, a[href], input, textarea, select, [role='button'], [role='link'], [role='checkbox'], [role='radio'], [role='combobox'], [role='textbox'], [contenteditable='true'], [role='tab'], [role='menuitem'], [role='switch'], h1, h2, h3, h4, h5, h6, [tabindex]:not([tabindex='-1'])";
+
+/**
+ * Humanizes element name attributes (e.g. "full_name" -> "Full Name", "userEmail" -> "User Email").
+ * @param {string} name
+ * @returns {string}
+ */
+function humanizeName(name) {
+  if (!name) return "";
+  return name
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .trim()
+    .split(/\s+/)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+/**
+ * Checks if an extracted label is generic boilerplate rather than a meaningful semantic title.
+ * @param {string} str
+ * @returns {boolean}
+ */
+function isGenericBoilerplateLabel(str) {
+  const s = (str || "").toLowerCase().trim();
+  if (!s) return true;
+  const boilerplateExact = new Set([
+    "your answer",
+    "enter your answer",
+    "type your answer",
+    "write a response",
+    "required question",
+    "this is a required question",
+    "text field",
+    "input field",
+    "textarea",
+    "*",
+    "short answer text",
+    "long answer text",
+    "option 1",
+    "untitled question"
+  ]);
+  if (boilerplateExact.has(s)) return true;
+  if (/^(?:your\s+answer|required\s+question|\*|text\s+field|input\s+field)$/i.test(s)) return true;
+  return false;
+}
+
+/**
+ * Cleans extracted form field title text by stripping punctuation, colons, and asterisks.
+ * @param {string} str
+ * @returns {string}
+ */
+function cleanFieldTitle(str) {
+  return (str || "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s*\*+\s*$/g, "")
+    .replace(/^\s*\*+\s*/g, "")
+    .replace(/[:*#_\-\/\\]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Resolves an element's visible semantic label strictly via local DOM signals.
+ * Implements strict priority order (never reads .value):
+ * 1. explicitly associated <label for="id">
+ * 2. wrapping ancestor <label>
+ * 3. non-boilerplate aria-label
+ * 4. non-boilerplate aria-labelledby (resolves referenced element(s) text)
+ * 5. enclosing question container (.M7eMe, [role="heading"], .geS5n, .Qr7Oae, .form-group)
+ * 6. associated visible label text (aria-describedby)
+ * 7. name attribute (humanized)
+ * 8. placeholder (non-boilerplate)
+ * 9. title attribute
+ * 10. nearby preceding visible text sibling
+ * 11. type-based fallback ("<type> field")
+ *
+ * @param {Element} el - DOM form control
+ * @param {string} type - Identified element type ("input", "textarea", "select", etc.)
+ * @returns {string} Extracted human-readable label
+ */
+function extractFormFieldLabel(el, type) {
+  const tagName = (el.tagName || "").toLowerCase();
+  const elId = el.id ? el.id.trim() : "";
+
+  // 1. Explicitly associated <label for="id">
+  if (elId && typeof document !== "undefined" && document.querySelector) {
+    try {
+      const escapedId = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(elId) : elId;
+      const labelFor = document.querySelector(`label[for="${escapedId}"]`);
+      if (labelFor) {
+        const text = cleanFieldTitle(labelFor.innerText || labelFor.textContent || "");
+        if (text && !isGenericBoilerplateLabel(text)) return text;
+      }
+    } catch (_) {}
+  }
+
+  // 2. Wrapping ancestor <label>
+  if (el.closest) {
+    const ancestorLabel = el.closest("label");
+    if (ancestorLabel) {
+      try {
+        const clone = ancestorLabel.cloneNode(true);
+        const nestedInputs = clone.querySelectorAll("input, textarea, select");
+        nestedInputs.forEach(input => input.remove());
+        const text = cleanFieldTitle(clone.innerText || clone.textContent || "");
+        if (text && !isGenericBoilerplateLabel(text)) return text;
+      } catch (_) {}
+      const rawText = cleanFieldTitle(ancestorLabel.innerText || ancestorLabel.textContent || "");
+      if (rawText && !isGenericBoilerplateLabel(rawText)) return rawText;
+    }
+  }
+
+  // 3. aria-label (only if not generic boilerplate like "Your answer")
+  if (el.getAttribute) {
+    const ariaLabel = el.getAttribute("aria-label");
+    if (ariaLabel && ariaLabel.trim()) {
+      const cleaned = cleanFieldTitle(ariaLabel);
+      if (cleaned && !isGenericBoilerplateLabel(cleaned)) {
+        return cleaned;
+      }
+    }
+  }
+
+  // 4. aria-labelledby (resolve referenced elements, filtering out boilerplate IDs/tokens)
+  if (el.getAttribute && typeof document !== "undefined" && document.getElementById) {
+    const ariaLabelledBy = el.getAttribute("aria-labelledby");
+    if (ariaLabelledBy && ariaLabelledBy.trim()) {
+      const ids = ariaLabelledBy.trim().split(/\s+/);
+      const parts = [];
+      for (const id of ids) {
+        const refEl = document.getElementById(id);
+        if (refEl) {
+          const text = cleanFieldTitle(refEl.innerText || refEl.textContent || "");
+          if (text && !isGenericBoilerplateLabel(text)) {
+            parts.push(text);
+          }
+        }
+      }
+      if (parts.length > 0) {
+        const combined = cleanFieldTitle(parts.join(" "));
+        if (combined && !isGenericBoilerplateLabel(combined)) {
+          return combined;
+        }
+      }
+    }
+  }
+
+  // 5. Enclosing Question Container (Google Forms / modern web form structures)
+  // Handles: Google Forms (.Qr7Oae, .geS5n, [role="listitem"], [data-item-id])
+  // Resolves: .M7eMe, [role="heading"], .exportQuestionTitle, .freebirdFormviewerComponentsQuestionBaseTitle
+  if (el.closest) {
+    const questionContainer = el.closest(
+      "[role='listitem'], .Qr7Oae, .geS5n, [data-item-id], .freebirdFormviewerViewNumberedItemContainer, .freebirdFormviewerComponentsQuestionBaseRoot, .form-group, .field-group, .form-item, fieldset"
+    );
+    if (questionContainer) {
+      const heading = questionContainer.querySelector(
+        ".M7eMe, [role='heading'], .exportQuestionTitle, .freebirdFormviewerComponentsQuestionBaseTitle, .FmiOAc, .c2gGi, legend, label, .field-label, h1, h2, h3, h4, h5, strong, b"
+      );
+      if (heading && heading !== el) {
+        const headingText = cleanFieldTitle(heading.innerText || heading.textContent || "");
+        if (headingText && !isGenericBoilerplateLabel(headingText) && headingText.length < 100) {
+          return headingText;
+        }
+      }
+    }
+  }
+
+  // 6. Associated visible label text (aria-describedby)
+  if (el.getAttribute && typeof document !== "undefined" && document.getElementById) {
+    const describedBy = el.getAttribute("aria-describedby");
+    if (describedBy && describedBy.trim()) {
+      const ids = describedBy.trim().split(/\s+/);
+      const parts = [];
+      for (const id of ids) {
+        const refEl = document.getElementById(id);
+        if (refEl) {
+          const text = cleanFieldTitle(refEl.innerText || refEl.textContent || "");
+          if (text && !isGenericBoilerplateLabel(text) && text.length < 100) {
+            parts.push(text);
+          }
+        }
+      }
+      if (parts.length > 0) {
+        const combined = cleanFieldTitle(parts.join(" "));
+        if (combined && !isGenericBoilerplateLabel(combined)) {
+          return combined;
+        }
+      }
+    }
+  }
+
+  // 7. name attribute (humanized)
+  if (el.getAttribute) {
+    const nameAttr = el.getAttribute("name");
+    if (nameAttr && nameAttr.trim()) {
+      const humanized = humanizeName(nameAttr);
+      if (humanized && !isGenericBoilerplateLabel(humanized)) return humanized;
+    }
+  }
+
+  // 8. placeholder (non-boilerplate)
+  if (el.getAttribute) {
+    const placeholder = el.getAttribute("placeholder");
+    if (placeholder && placeholder.trim()) {
+      const cleaned = cleanFieldTitle(placeholder);
+      if (cleaned && !isGenericBoilerplateLabel(cleaned)) {
+        return cleaned;
+      }
+    }
+  }
+
+  // 9. title attribute
+  if (el.getAttribute) {
+    const title = el.getAttribute("title");
+    if (title && title.trim()) {
+      const cleaned = cleanFieldTitle(title);
+      if (cleaned && !isGenericBoilerplateLabel(cleaned)) {
+        return cleaned;
+      }
+    }
+  }
+
+  // 10. Nearby preceding visible text sibling
+  let prev = el.previousElementSibling;
+  while (prev) {
+    const prevText = cleanFieldTitle(prev.innerText || prev.textContent || "");
+    if (prevText && !isGenericBoilerplateLabel(prevText) && prevText.length < 100) {
+      return prevText;
+    }
+    prev = prev.previousElementSibling;
+  }
+
+  // 11. Enclosing form-group / container label fallback
+  if (el.closest) {
+    const parentGroup = el.closest(".form-group, .field-group, .form-row, .input-group, div, p");
+    if (parentGroup && (typeof document === "undefined" || parentGroup !== document.body)) {
+      const labelLike = parentGroup.querySelector("label, .field-label, .label, span, strong, b");
+      if (labelLike && labelLike !== el) {
+        const text = cleanFieldTitle(labelLike.innerText || labelLike.textContent || "");
+        if (text && !isGenericBoilerplateLabel(text) && text.length < 100) return text;
+      }
+    }
+  }
+
+  // 12. Fallback to "<type> field"
+  if (tagName === "input") {
+    if (el.type === "password") {
+      return "Password field";
+    } else if (el.type === "email") {
+      return "Email field";
+    } else if (el.type === "checkbox") {
+      return "Checkbox";
+    } else if (el.type === "radio") {
+      return "Radio button";
+    } else {
+      return el.type ? `${el.type} field` : "Input field";
+    }
+  } else if (tagName === "textarea") {
+    return "Textarea";
+  } else if (tagName === "select") {
+    return "Select dropdown";
+  }
+
+  return `${type} field`;
+}
+
+/**
+ * Shared helper to classify a single DOM element's type, label, semantic tag, and visible bounding box.
+ * SECURITY: Never reads or records `.value` from any input or form control.
+ *
+ * @param {Element} el - DOM element
+ * @param {number|null} [fieldId=null] - Stable per-scan form-field index
+ * @returns {Object|null} Element descriptor or null if hidden
+ */
+function classifyVisualElement(el, fieldId = null) {
+  // 1. Check layout presence and visibility
+  const rect = getVisibleRect(el);
+  if (!rect) {
+    return null;
+  }
+
+  // 2. Identify UI element type
+  const tagName = (el.tagName || "").toLowerCase();
+  const elRole = el.getAttribute ? (el.getAttribute("role") || "").toLowerCase() : "";
+  const isContentEditable = !!(el.isContentEditable || (el.getAttribute && el.getAttribute("contenteditable") === "true"));
+  let type = "element";
+
+  if (/^h[1-6]$/.test(tagName)) {
+    type = "heading";
+  } else if (tagName === "button" || elRole === "button" || (tagName === "input" && ["button", "submit", "reset"].includes(el.type))) {
+    type = "button";
+  } else if (tagName === "a" || elRole === "link") {
+    type = "link";
+  } else if (tagName === "textarea") {
+    type = "textarea";
+  } else if (tagName === "select" || elRole === "combobox") {
+    type = "select";
+  } else if (elRole === "textbox" || isContentEditable) {
+    type = (el.getAttribute && el.getAttribute("aria-multiline") === "true") || tagName === "textarea" ? "textarea" : "input";
+  } else if (tagName === "input") {
+    if (el.type === "checkbox" || elRole === "checkbox") {
+      type = "checkbox";
+    } else if (el.type === "radio" || elRole === "radio") {
+      type = "radio";
+    } else {
+      type = "input";
+    }
+  } else if (["checkbox", "radio", "tab", "menuitem", "switch"].includes(elRole)) {
+    type = elRole;
+  }
+
+  // 3. Safe, non-sensitive label extraction
+  // NOTE: Explicitly NEVER reads .value from user-entered form controls to ensure privacy preservation.
+  let label = "";
+  const isFormField = ["input", "textarea", "select"].includes(tagName) || elRole === "textbox" || isContentEditable;
+
+  if (isFormField) {
+    label = extractFormFieldLabel(el, type);
+  } else {
+    // Buttons, links, headings, interactive roles
+    if (el.getAttribute && el.getAttribute("aria-label")) {
+      label = el.getAttribute("aria-label").trim();
+    } else if (el.getAttribute && el.getAttribute("aria-labelledby") && typeof document !== "undefined" && document.getElementById) {
+      const ids = el.getAttribute("aria-labelledby").trim().split(/\s+/);
+      const parts = [];
+      for (const id of ids) {
+        const refEl = document.getElementById(id);
+        if (refEl) {
+          const t = (refEl.innerText || refEl.textContent || "").trim();
+          if (t) parts.push(t);
+        }
+      }
+      if (parts.length > 0) label = parts.join(" ");
+    }
+    if (!label) {
+      label = (el.innerText || el.textContent || "").trim();
+    }
+    if (!label && el.querySelector) {
+      const img = el.querySelector("img[alt]");
+      if (img && img.getAttribute("alt")) {
+        label = img.getAttribute("alt").trim();
+      }
+    }
+    if (!label && el.getAttribute && el.getAttribute("title")) {
+      label = el.getAttribute("title").trim();
+    }
+    if (!label && tagName === "input" && ["button", "submit", "reset"].includes(el.type) && el.value) {
+      label = String(el.value).trim();
+    }
+  }
+
+  // Normalize spacing and truncate label length
+  label = label.replace(/\s+/g, " ").slice(0, 60) || `${type} element`;
+
+  const isDisabled = !!(
+    el.disabled ||
+    (el.getAttribute && el.getAttribute("aria-disabled") === "true") ||
+    (el.classList && el.classList.contains("disabled"))
+  );
+
+  // 4. Record bounding box and metadata with safe semantic label
+  const semanticTag = getSemanticTag(type, label, el);
+  const descriptor = {
+    type: type,
+    role: elRole || (["button", "link"].includes(type) ? type : (isFormField ? "textbox" : null)),
+    label: label,
+    text: label,
+    semanticTag: semanticTag,
+    visible: true,
+    enabled: !isDisabled,
+    disabled: isDisabled,
+    placeholder: (el.getAttribute ? el.getAttribute("placeholder") : null) || null,
+    ariaLabel: (el.getAttribute ? el.getAttribute("aria-label") : null) || null,
+    title: (el.getAttribute ? el.getAttribute("title") : null) || null,
+    inputType: tagName === "input" ? (el.type || "text") : null,
+    isInteractable: !isDisabled && ["button", "link", "input", "textarea", "select", "checkbox", "radio", "textbox"].includes(type),
+    x: Math.round(rect.x),
+    y: Math.round(rect.y),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
+    bounds: {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    },
+    index: typeof fieldId === "number" ? fieldId : null,
+    confidence: 1.0,
+    evidence: `Local DOM: tag=${tagName}, role=${elRole || "none"}, semanticTag=${semanticTag || "none"}`
+  };
+
+  if (isFormField && typeof fieldId === "number") {
+    descriptor.fieldId = fieldId;
+  }
+
+  return descriptor;
+}
+
+/**
+ * Milestone 8 & 16: Local DOM-based visual element perception (client-side only).
+ * Scans for visible buttons, links, headings, inputs, textareas, and selects.
+ * Strips DOM node references for message-passing serializability.
+ *
+ * @returns {Array<Object>} Array of visible UI element descriptors
+ */
+function extractVisualElements() {
+  const elements = document.querySelectorAll(VISUAL_SELECTOR);
+  const visualElements = [];
+  let formFieldCounter = 0;
+
+  elements.forEach((el) => {
+    const tagName = (el.tagName || "").toLowerCase();
+    const isFormField = ["input", "textarea", "select"].includes(tagName) ||
+      (el.getAttribute && el.getAttribute("role") === "textbox") ||
+      el.isContentEditable ||
+      (el.getAttribute && el.getAttribute("contenteditable") === "true");
+    const fieldId = isFormField ? formFieldCounter++ : null;
+    const item = classifyVisualElement(el, fieldId);
+    if (item) {
+      item.index = visualElements.length;
+      visualElements.push(item);
+    }
+  });
+
+  return visualElements;
+}
+
+/**
+ * Milestone 15 & 16: Node-carrying visual element extraction for live DOM re-verification.
+ * Keeps a reference to the live DOM node for safe in-page execution.
+ *
+ * @returns {Array<Object>} Array of visual element descriptors with live .node references
+ */
+function extractVisualElementsWithNodes() {
+  const elements = document.querySelectorAll(VISUAL_SELECTOR);
+  const visualElementsWithNodes = [];
+  let formFieldCounter = 0;
+
+  elements.forEach((el) => {
+    const tagName = (el.tagName || "").toLowerCase();
+    const isFormField = ["input", "textarea", "select"].includes(tagName) ||
+      (el.getAttribute && el.getAttribute("role") === "textbox") ||
+      el.isContentEditable ||
+      (el.getAttribute && el.getAttribute("contenteditable") === "true");
+    const fieldId = isFormField ? formFieldCounter++ : null;
+    const item = classifyVisualElement(el, fieldId);
+    if (item) {
+      item.index = visualElementsWithNodes.length;
+      visualElementsWithNodes.push({
+        ...item,
+        node: el
+      });
+    }
+  });
+
+  return visualElementsWithNodes;
+}
+
+/**
+ * Milestone 11: Local DOM-attribute heuristic for sensitive input detection.
+ * Checks purely input types and name/id/placeholder keywords.
+ * SECURITY: Never reads or inspects `.value` of any field.
+ */
+const SENSITIVE_KEYWORDS = ["card", "credit", "cvv", "ssn", "phone", "password", "email"];
+
+function isSensitiveElement(el) {
+  const tagName = el.tagName.toLowerCase();
+  if (tagName !== "input" && tagName !== "textarea") {
+    return false;
+  }
+
+  const type = (el.type || "").toLowerCase();
+  if (tagName === "input" && (type === "password" || type === "email")) {
+    return true;
+  }
+
+  // Pure attribute heuristic — never reads .value
+  const nameAttr = (el.getAttribute("name") || "").toLowerCase();
+  const idAttr = (el.id || "").toLowerCase();
+  const placeholderAttr = (el.getAttribute("placeholder") || "").toLowerCase();
+
+  return SENSITIVE_KEYWORDS.some(kw =>
+    nameAttr.includes(kw) || idAttr.includes(kw) || placeholderAttr.includes(kw)
+  );
+}
+
+/**
+ * Milestone 11: Extracts bounding boxes of visible sensitive elements.
+ * Reuses the exact same visibility logic as M8.
+ *
+ * @returns {Array<Object>} Array of sensitive region bounding boxes {x, y, width, height}
+ */
+function extractSensitiveRegions() {
+  const elements = document.querySelectorAll("input, textarea");
+  const sensitiveRegions = [];
+
+  elements.forEach((el) => {
+    if (!isSensitiveElement(el)) return;
+    const rect = getVisibleRect(el);
+    if (!rect) return;
+
+    sensitiveRegions.push({
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    });
+  });
+
+  return sensitiveRegions;
+}
+
+let currentApprovalCallback = null;
+
+function removeInPageApprovalModal() {
+  const existing = document.getElementById("sih-agent-approval-overlay");
+  if (existing) {
+    existing.remove();
+  }
+  if (currentApprovalCallback) {
+    currentApprovalCallback = null;
+  }
+}
+
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function showInPageApprovalModal(actionDetails, callback) {
+  removeInPageApprovalModal();
+  currentApprovalCallback = callback;
+
+  const overlay = document.createElement("div");
+  overlay.id = "sih-agent-approval-overlay";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-labelledby", "sih-approval-title");
+
+  Object.assign(overlay.style, {
+    position: "fixed",
+    top: "0",
+    left: "0",
+    width: "100vw",
+    height: "100vh",
+    backgroundColor: "rgba(10, 15, 29, 0.75)",
+    backdropFilter: "blur(6px)",
+    WebkitBackdropFilter: "blur(6px)",
+    zIndex: "2147483647",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+    color: "#ffffff",
+    padding: "20px",
+    boxSizing: "border-box"
+  });
+
+  const card = document.createElement("div");
+  card.id = "sih-agent-approval-card";
+  Object.assign(card.style, {
+    backgroundColor: "#111827",
+    border: "1px solid rgba(239, 68, 68, 0.4)",
+    borderRadius: "16px",
+    padding: "24px 28px",
+    maxWidth: "480px",
+    width: "100%",
+    boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.6), 0 0 30px rgba(239, 68, 68, 0.2)",
+    display: "flex",
+    flexDirection: "column",
+    gap: "16px"
+  });
+
+  const header = document.createElement("div");
+  header.style.display = "flex";
+  header.style.alignItems = "center";
+  header.style.justifyContent = "space-between";
+
+  const badge = document.createElement("div");
+  badge.textContent = "SAFETY GATE: APPROVAL REQUIRED";
+  Object.assign(badge.style, {
+    fontSize: "11px",
+    fontWeight: "700",
+    letterSpacing: "0.06em",
+    textTransform: "uppercase",
+    padding: "4px 10px",
+    borderRadius: "9999px",
+    backgroundColor: "rgba(239, 68, 68, 0.18)",
+    color: "#f87171",
+    border: "1px solid rgba(239, 68, 68, 0.4)"
+  });
+
+  const riskBadge = document.createElement("div");
+  riskBadge.textContent = actionDetails.risk || "HIGH RISK";
+  Object.assign(riskBadge.style, {
+    fontSize: "11px",
+    fontWeight: "700",
+    padding: "4px 10px",
+    borderRadius: "9999px",
+    backgroundColor: "#ef4444",
+    color: "#ffffff"
+  });
+
+  header.appendChild(badge);
+  header.appendChild(riskBadge);
+
+  const title = document.createElement("h2");
+  title.id = "sih-approval-title";
+  title.textContent = "Agent Ready for Consequential Action";
+  Object.assign(title.style, {
+    margin: "0",
+    fontSize: "18px",
+    fontWeight: "600",
+    color: "#f3f4f6"
+  });
+
+  const body = document.createElement("div");
+  Object.assign(body.style, {
+    backgroundColor: "rgba(31, 41, 55, 0.6)",
+    border: "1px solid rgba(75, 85, 99, 0.4)",
+    borderRadius: "10px",
+    padding: "14px 16px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "10px",
+    fontSize: "13px",
+    lineHeight: "1.5"
+  });
+
+  const actionRow = document.createElement("div");
+  actionRow.innerHTML = `<span style="color:#9ca3af;">Action: </span><strong style="color:#60a5fa;">${escapeHtml(actionDetails.action || "CLICK")} &rarr; ${escapeHtml(actionDetails.target || "Submit")}</strong>`;
+
+  const reasonRow = document.createElement("div");
+  reasonRow.innerHTML = `<span style="color:#9ca3af;">Reason: </span><span style="color:#e5e7eb;">${escapeHtml(actionDetails.reason || "This action will submit or modify state.")}</span>`;
+
+  const contextRow = document.createElement("div");
+  contextRow.innerHTML = `<span style="color:#9ca3af;">Page: </span><span style="color:#d1d5db;">${escapeHtml(document.title || window.location.hostname)}</span>`;
+
+  body.appendChild(actionRow);
+  body.appendChild(reasonRow);
+  body.appendChild(contextRow);
+
+  if (actionDetails.taskSummary) {
+    const taskRow = document.createElement("div");
+    taskRow.innerHTML = `<span style="color:#9ca3af;">Task: </span><span style="color:#d1d5db;">${escapeHtml(actionDetails.taskSummary)}</span>`;
+    body.appendChild(taskRow);
+  }
+
+  const notice = document.createElement("p");
+  notice.textContent = "This action will not execute automatically. Explicit human confirmation is required.";
+  Object.assign(notice.style, {
+    margin: "0",
+    fontSize: "12px",
+    color: "#9ca3af"
+  });
+
+  const btnContainer = document.createElement("div");
+  Object.assign(btnContainer.style, {
+    display: "flex",
+    gap: "12px",
+    marginTop: "8px"
+  });
+
+  const btnApprove = document.createElement("button");
+  btnApprove.id = "sih-btn-approve";
+  btnApprove.textContent = "Approve & Continue";
+  Object.assign(btnApprove.style, {
+    flex: "1",
+    backgroundColor: "#10b981",
+    color: "#ffffff",
+    border: "none",
+    borderRadius: "8px",
+    padding: "10px 16px",
+    fontSize: "14px",
+    fontWeight: "600",
+    cursor: "pointer",
+    transition: "background-color 0.15s ease"
+  });
+  btnApprove.onmouseenter = () => { btnApprove.style.backgroundColor = "#059669"; };
+  btnApprove.onmouseleave = () => { btnApprove.style.backgroundColor = "#10b981"; };
+
+  const btnCancel = document.createElement("button");
+  btnCancel.id = "sih-btn-cancel";
+  btnCancel.textContent = "Cancel Execution";
+  Object.assign(btnCancel.style, {
+    flex: "1",
+    backgroundColor: "#374151",
+    color: "#e5e7eb",
+    border: "1px solid #4b5563",
+    borderRadius: "8px",
+    padding: "10px 16px",
+    fontSize: "14px",
+    fontWeight: "600",
+    cursor: "pointer",
+    transition: "background-color 0.15s ease"
+  });
+  btnCancel.onmouseenter = () => { btnCancel.style.backgroundColor = "#4b5563"; };
+  btnCancel.onmouseleave = () => { btnCancel.style.backgroundColor = "#374151"; };
+
+  btnApprove.addEventListener("click", () => {
+    removeInPageApprovalModal();
+    if (callback) callback({ approved: true });
+  });
+
+  btnCancel.addEventListener("click", () => {
+    removeInPageApprovalModal();
+    if (callback) callback({ approved: false, cancelled: true });
+  });
+
+  btnContainer.appendChild(btnCancel);
+  btnContainer.appendChild(btnApprove);
+
+  card.appendChild(header);
+  card.appendChild(title);
+  card.appendChild(body);
+  card.appendChild(notice);
+  card.appendChild(btnContainer);
+
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+}
+
+// Listen for messages sent from the popup
+if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "getPageInfo") {
+      // 1. Collect basic page metadata (Milestone 1)
+      const title = document.title || "No Title Found";
+      const url = window.location.href;
+
+      // 2. Extract a small snippet of visible text (capped at 2000 characters)
+      const rawVisibleText = document.body ? document.body.innerText.slice(0, 2000) : "";
+
+      // 3. Redact any sensitive PII locally before sending back (Milestone 2)
+      const redactedSample = typeof redactText === "function" 
+        ? redactText(rawVisibleText) 
+        : rawVisibleText;
+
+      // 4. Local visual context perception: extract visible UI elements (Milestone 8)
+      const visualElements = extractVisualElements();
+
+      // 5. Local visual privacy: extract sensitive regions (Milestone 11)
+      const tSensStart = performance.now();
+      const sensitiveRegions = extractSensitiveRegions();
+      const sensitiveDetectionMs = Math.round(performance.now() - tSensStart);
+
+      // 6. Local search results state detection (Milestone 13 Cross-Website Robustness)
+      const urlLower = url.toLowerCase();
+      const titleLower = title.toLowerCase();
+      const hasSearchUrl = urlLower.includes("/search") || urlLower.includes("?q=") || urlLower.includes("&q=") || urlLower.includes("query=") || urlLower.includes("search?");
+      const hasSearchTitle = titleLower.includes("search") || titleLower.includes("results") || titleLower.includes(" - google") || titleLower.includes("at duckduckgo") || titleLower.includes("search results");
+      const resultContainers = document.querySelectorAll(
+        "#search, #rso, #links, .results, .search-results, [role='main'] a, .mw-search-results, .b_results"
+      );
+      const isSearchResults = !!(hasSearchUrl || (hasSearchTitle && resultContainers && resultContainers.length > 0));
+
+      // 7. Send the sanitized data back to popup (never expose raw text, passwords, or input values)
+      sendResponse({
+        success: true,
+        title,
+        url,
+        redactedSample,
+        visualElements,
+        sensitiveRegions,
+        sensitiveDetectionMs,
+        isSearchResults,
+        searchSignals: {
+          hasSearchUrl,
+          hasSearchTitle,
+          containerCount: resultContainers ? resultContainers.length : 0
+        }
+      });
+      return false;
+    } else if (request.action === "checkSearchResultsState") {
+      const url = (window.location.href || "").toLowerCase();
+      const title = (document.title || "").toLowerCase();
+      const hasSearchUrl = url.includes("/search") || url.includes("?q=") || url.includes("&q=") || url.includes("query=") || url.includes("search?");
+      const hasSearchTitle = title.includes("search") || title.includes("results") || title.includes(" - google") || title.includes("at duckduckgo") || title.includes("search results");
+      const resultContainers = document.querySelectorAll(
+        "#search, #rso, #links, .results, .search-results, [role='main'] a, .mw-search-results, .b_results"
+      );
+      const isSearchResults = !!(hasSearchUrl || (hasSearchTitle && resultContainers && resultContainers.length > 0));
+      sendResponse({
+        success: true,
+        isSearchResults,
+        hasSearchUrl,
+        hasSearchTitle,
+        containerCount: resultContainers ? resultContainers.length : 0
+      });
+      return false;
+    } else if (request.action === "executeAction") {
+      // Milestones 5 & 6: Safely execute whitelisted action
+      const executionResult = executeAction(request.payload);
+      sendResponse({
+        success: true,
+        result: executionResult
+      });
+      return false;
+    } else if (request.action === "requestHumanApproval") {
+      // Safe human-in-the-loop approval modal
+      showInPageApprovalModal(request.payload || {}, (response) => {
+        sendResponse(response);
+      });
+      return true; // Keep message channel open for async user response
+    } else if (request.action === "dismissHumanApproval") {
+      removeInPageApprovalModal();
+      sendResponse({ dismissed: true });
+      return false;
+    }
+
+    return false;
+  });
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    VISUAL_SELECTOR,
+    ACTION_TARGET_MAP,
+    SCROLL_TARGET_MAP,
+    classifyVisualElement,
+    extractVisualElements,
+    extractVisualElementsWithNodes,
+    extractFormFieldLabel,
+    humanizeName,
+    executeAction,
+    normalizeLabel,
+    labelsMatch,
+    showInPageApprovalModal,
+    removeInPageApprovalModal
+  };
+}

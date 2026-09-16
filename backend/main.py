@@ -36,6 +36,29 @@ app.add_middleware(
 
 PROJECT_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+def _load_env_file():
+    """Lightweight stdlib loader for .env from backend/ or project root without external dependencies."""
+    for candidate in [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
+        os.path.join(PROJECT_ROOT_DIR, ".env")
+    ]:
+        if os.path.exists(candidate):
+            try:
+                with open(candidate, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip("'\"")
+                        if k and k not in os.environ:
+                            os.environ[k] = v
+            except Exception:
+                pass
+
+_load_env_file()
+
 @app.get("/test-page.html")
 async def serve_test_page():
     """Serves the test page over local HTTP for generic browser agent testing."""
@@ -57,7 +80,7 @@ async def serve_demo_page(page_name: str):
 # Milestones 3–6: Text-Only Sanitized Context (Preserved & Backwards-Compatible)
 # =====================================================================
 
-ALLOWED_ACTIONS = {"CLICK", "SCROLL", "FILL", "FILL_FORM", "WARN", "NONE"}
+ALLOWED_ACTIONS = {"CLICK", "SCROLL", "FILL", "FILL_FORM", "WARN", "NONE", "SUBMIT"}
 FORBIDDEN_VALUE_KEYS = {"value", "fieldvalue", "field_value", "localvalue", "local_value"}
 
 def assert_no_forbidden_value_keys(data: Any, path: str = ""):
@@ -85,10 +108,11 @@ class PageContext(BaseModel):
     redactedSample: str
 
 # Schema for structured agent decision (supports optional amount for SCROLL and grounded target metadata)
-# CRITICAL PRIVACY RULE: AgentAction NEVER contains a 'value' or 'fieldValue' field anywhere.
+# For FILL actions: 'target'/'targetLabel' identifies which input element to fill, while 'value' holds the exact user query text.
 class AgentAction(BaseModel):
     action: str
     target: Optional[str] = None
+    value: Optional[str] = None
     amount: Optional[int] = None
     targetIndex: Optional[int] = None
     targetType: Optional[str] = None
@@ -244,6 +268,56 @@ def _match_score(task_lower: str, label: str) -> float:
     seq_ratio = difflib.SequenceMatcher(None, t, l).ratio()
     return max(overlap_ratio, seq_ratio)
 
+def extract_task_query_or_value(task: str) -> Optional[str]:
+    """
+    Extracts the user's intended search query or fill value directly from the user task.
+    Enforces strict separation between target elements and user input values.
+    Never returns DOM element labels, placeholders, or input names.
+    """
+    if not task or not isinstance(task, str):
+        return None
+    task_clean = task.strip()
+
+    # 1. Explicit fill patterns: "fill <field> as/with <val>", "enter <val> in <field>"
+    m_as = re.search(
+        r'\b(?:fill|enter|type|set)\b.*?\b(?:as|with|value)\s+[\'"]?([^\'",;]+?)[\'"]?(?:\s+(?:and|then)\b|[.,;!?]|$)',
+        task_clean,
+        re.IGNORECASE
+    )
+    if m_as:
+        val = m_as.group(1).strip()
+        if val and not re.match(r'^(?:the|a|an|box|input|field|button)$', val, re.I):
+            return val
+
+    m_in = re.search(
+        r'\b(?:enter|type|put)\s+[\'"]?([^\'",;]+?)[\'"]?\s+(?:in|into)\b',
+        task_clean,
+        re.IGNORECASE
+    )
+    if m_in:
+        val = m_in.group(1).strip()
+        if val and not re.match(r'^(?:the|a|an|box|input|field|button)$', val, re.I):
+            return val
+
+    # 2. Search query pattern:
+    # "find english and search for artificial intelligence"
+    # "find search box and search i phone 15 and find add to cart button and click it"
+    # "search for artificial intelligence"
+    # "search i phone 15"
+    # "search for machine learning"
+    # "search machine learning"
+    m_search = re.search(
+    r'(?<!\bfill\s)(?<!\benter\s)(?<!\btype\s)(?<!\bclick\s)(?<!\bfind\s)\bsearch\s+(?:for\s+)?(?!(?:the\s+)?(?:box|input|field|bar|area|button)\b)[\'"]?([^\'",;]+?)[\'"]?(?:\s+(?:and\s+then|and\s+(?:identify|find|open|click|select|locate|choose)|then\s+(?:identify|find|open|click|select|locate|choose))\b|[.,;!?]|$)',
+    task_clean,
+    re.IGNORECASE
+)
+    if m_search:
+        val = m_search.group(1).strip()
+        if val and not re.match(r'^(?:the|a|an|it|this|that|box|input|field|bar|area|button)$', val, re.I):
+            return val
+
+    return None
+
 class DemoAgentProvider:
     """
     Deterministic, explainable demo agent provider for SIH 2026 Problem Statement SIH26171.
@@ -253,6 +327,7 @@ class DemoAgentProvider:
     def __init__(self):
         self.last_provider_type: str = "demo"
         self.last_provider_name: str = "Demo"
+        self.last_provider_status: str = "DEMO (Deterministic)"
         self.last_fallback_used: bool = False
         self.last_fallback_reason: Optional[str] = None
         self.last_confidence: float = 1.0
@@ -260,12 +335,70 @@ class DemoAgentProvider:
     def propose_action(self, task: str, context: dict) -> Tuple[dict, str]:
         self.last_provider_type = "demo"
         self.last_provider_name = "Demo"
+        self.last_provider_status = "DEMO (Deterministic)"
         self.last_fallback_used = False
         self.last_fallback_reason = None
         task_lower = (task or "").strip().lower()
         elements = context.get("elements", [])
         redacted_sample = (context.get("redactedSample") or "").lower()
         field_plan = context.get("fieldPlan") or []
+
+        # Signal 0c: Search query extraction and grounding (BUG 1, BUG 5)
+        # e.g. "search for artificial intelligence", "search i phone 15",
+        # "find search box and search i phone 15", "find english and search for artificial intelligence"
+        search_query_val = extract_task_query_or_value(task)
+        if search_query_val and any(k in task_lower for k in ["search", "query", "find search", "fill search"]):
+            SEARCH_FIELD_TYPES = {"input", "textarea", "textbox", "search"}
+            search_cands = []
+            for i, el in enumerate(elements):
+                if el.get("disabled") or str(el.get("aria-disabled")).lower() == "true":
+                    continue
+                el_type = str(el.get("type", "")).lower()
+                if el_type not in SEARCH_FIELD_TYPES and el.get("tag", "").lower() not in {"input", "textarea"}:
+                    continue
+
+                # Invariant: If extracted query matches the candidate's label or placeholder (e.g. "the knowledge base" in "Search knowledge base"),
+                # the task is identifying the search target input to click/focus, NOT a value to fill!
+                cand_label_norm = _normalize(str(el.get("label", "")))
+                cand_ph_norm = _normalize(str(el.get("placeholder", "")))
+                query_norm = _normalize(search_query_val)
+                clean_query_norm = re.sub(r'^(?:the|a|an)\s+', '', query_norm).strip()
+                clean_label_norm = re.sub(r'^(?:the|a|an)\s+', '', cand_label_norm).strip()
+                clean_label_no_search = re.sub(r'\bsearch\b', '', clean_label_norm).strip()
+
+                if clean_query_norm and (
+                    clean_query_norm in cand_label_norm or
+                    cand_label_norm in clean_query_norm or
+                    (clean_label_no_search and (clean_query_norm in clean_label_no_search or clean_label_no_search in clean_query_norm)) or
+                    (cand_ph_norm and clean_query_norm in cand_ph_norm)
+                ):
+                    continue
+
+                s_label = _match_score("search", str(el.get("label", "")))
+                s_ph = _match_score("search", str(el.get("placeholder", ""))) if el.get("placeholder") else 0.0
+                s_aria = _match_score("search", str(el.get("ariaLabel", ""))) if el.get("ariaLabel") else 0.0
+                s_sem = 1.0 if str(el.get("semanticTag", "")).upper() == "SEARCH_INPUT" else 0.0
+                s_max = max(s_label, s_ph, s_aria, s_sem)
+                if s_max >= 0.35:
+                    search_cands.append((s_max, i, el))
+
+            if search_cands:
+                search_cands.sort(key=lambda x: x[0], reverse=True)
+                best_score, best_idx, el = search_cands[0]
+                target_lbl = str(el.get("label", "") or el.get("placeholder", "") or "Search")[:60]
+                reasoning = (
+                    f"Task requested search with query '{search_query_val}'. Grounded to search input "
+                    f"element #{best_idx} ({el.get('type')}: '{target_lbl}') with score {best_score:.2f}."
+                )
+                return {
+                    "action": "FILL",
+                    "targetIndex": best_idx,
+                    "targetType": el.get("type", "input"),
+                    "targetLabel": target_lbl,
+                    "value": search_query_val,
+                    "groundingScore": round(best_score, 3),
+                    "groundingMethod": "local-fuzzy-match",
+                }, reasoning
 
         # Signal 0: Explicit Sanitized Field Plan for Form Filling (Milestone 16 & 17)
         # Bounded deterministic grounding of sanitized field hints (no values)
@@ -463,7 +596,12 @@ class DemoAgentProvider:
                 )
                 return {"action": "CLICK", "target": "SEARCH_INPUT"}, reasoning
 
-        # 1d. Legacy Submit: when task is asking for submit button and exactly one matching button exists
+        # 1d. Search Submission: when task explicitly asks to submit search
+        if any(keyword in task_lower for keyword in ["submit search", "submit the search"]):
+            reasoning = "Task requested search submission ('submit search'). Proposing allowlisted action SUBMIT -> search."
+            return {"action": "SUBMIT", "target": "search"}, reasoning
+
+        # 1e. Legacy Submit: when task is asking for submit button and exactly one matching button exists
         if any(keyword in task_lower for keyword in ["find the submit", "submit button and click", "submit form", "click submit", "submit"]):
             matching_submits = [
                 el for el in elements
@@ -604,17 +742,31 @@ PERMITTED ACTIONS:
 - CLICK: Click a button, link, tab, or interactive element.
 - FILL: Focus/fill a single form field (provide target or fieldHint). Do NOT generate sensitive values or passwords.
 - FILL_FORM: User wants to fill an entire form or profile (e.g. 'fill the form'). Field values are supplied locally from the client's safe profile.
+- SUBMIT: Submit a search or form (target identifies search or form).
 - SCROLL: Scroll viewport (amount in pixels, default 500).
 - NONE: Ambiguous request, unsupported intent, or no matching element found.
+
+For FILL:
+- target identifies the input element.
+- value is the exact text the user wants entered.
+- NEVER use the input's label, placeholder, aria-label, or DOM text as the value unless the user explicitly requested that exact text.
+
+PRODUCT SELECTION RULES:
+- When the user task asks to identify, select, or open the most relevant product/result for a search query (e.g. 'iPhone 15'):
+  1. Prefer the actual device/product listing (e.g., 'Apple iPhone 15 (128 GB) - Black').
+  2. Do NOT select accessories such as cases, covers, screen protectors, chargers, cables, or adapters merely because their title contains the query terms.
+  3. Ground the selected result to the actual locally perceived DOM element for that product.
+  4. If no confident actual product match exists, return action="NONE" with ambiguity="AMBIGUOUS" rather than selecting an accessory.
 
 OUTPUT FORMAT:
 Output strictly valid JSON matching this schema:
 {
-  "action": "CLICK" | "FILL" | "FILL_FORM" | "SCROLL" | "NONE",
+  "action": "CLICK" | "FILL" | "FILL_FORM" | "SUBMIT" | "SCROLL" | "NONE",
   "target": "target element label or null",
   "targetRole": "button | link | input | textarea | select | etc., or null",
   "targetIndex": integer or null,
   "fieldHint": "field hint if FILL, or null",
+  "value": "exact text the user wants entered if FILL, or null",
   "valueKey": "name | email | address | phone | comments, or null",
   "amount": integer or null,
   "confidence": float 0.0 to 1.0,
@@ -646,15 +798,16 @@ class GeminiAgentProvider:
         self,
         api_key: Optional[str] = None,
         model_name: Optional[str] = None,
-        timeout_seconds: float = 5.0,
+        timeout_seconds: float = 25.0,
         fallback_provider: Optional[AgentProvider] = None,
     ):
         self.api_key = (api_key if api_key is not None else os.getenv("GEMINI_API_KEY", "")).strip()
-        self.model_name = (model_name if model_name is not None else os.getenv("GEMINI_MODEL", "gemini-2.5-flash")).strip()
-        self.timeout_seconds = timeout_seconds
+        self.model_name = (model_name if model_name is not None else os.getenv("GEMINI_MODEL", "gemini-3.5-flash")).strip()
+        self.timeout_seconds = float(os.getenv("GEMINI_TIMEOUT", str(timeout_seconds)))
         self.fallback_provider = fallback_provider or DemoAgentProvider()
         self.last_provider_type: str = "gemini"
         self.last_provider_name: str = "Gemini"
+        self.last_provider_status: str = "GEMINI (Active)"
         self.last_fallback_used: bool = False
         self.last_fallback_reason: Optional[str] = None
         self.last_confidence: float = 1.0
@@ -662,6 +815,7 @@ class GeminiAgentProvider:
     def _fallback(self, task: str, context: dict, reason: str) -> Tuple[dict, str]:
         self.last_provider_type = "demo_fallback"
         self.last_provider_name = "Demo fallback"
+        self.last_provider_status = f"GEMINI ERROR / DEMO FALLBACK ({reason})"
         self.last_fallback_used = True
         self.last_fallback_reason = reason
         print(f"[AI PROVIDER] Gemini fallback triggered ({reason}). Using DemoAgentProvider.")
@@ -693,7 +847,6 @@ class GeminiAgentProvider:
                 "ariaLabel": str(el.get("ariaLabel", ""))[:80] if el.get("ariaLabel") else None,
                 "disabled": bool(el.get("disabled") or str(el.get("aria-disabled", "")).lower() == "true")
             })
-
         return {
             "title": str(context.get("title", ""))[:120],
             "elementCount": len(sanitized_elements),
@@ -702,49 +855,42 @@ class GeminiAgentProvider:
         }
 
     def _call_gemini(self, prompt: str) -> str:
-        """Invokes Gemini API with strict timeout."""
-        def _invoke():
-            if HAS_GENAI_SDK and self.api_key:
-                client = genai.Client(api_key=self.api_key)
+        """Invoke Gemini API with multi-model resilience."""
+        if not HAS_GENAI_SDK or not self.api_key:
+            raise RuntimeError("Gemini SDK or API key unavailable")
+
+        client = genai.Client(api_key=self.api_key)
+
+        models_to_try = [self.model_name]
+        for fallback_model in ["gemini-3.5-flash", "gemini-flash-latest", "gemini-3.7-flash"]:
+            if fallback_model not in models_to_try:
+                models_to_try.append(fallback_model)
+
+        last_error = None
+        for current_model in models_to_try:
+            try:
                 response = client.models.generate_content(
-                    model=self.model_name,
+                    model=current_model,
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         system_instruction=GEMINI_SYSTEM_INSTRUCTION,
                         response_mime_type="application/json",
-                        temperature=0.1,
-                    )
+                    ),
                 )
-                return response.text
-            else:
-                import urllib.request
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent?key={self.api_key}"
-                payload = {
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "systemInstruction": {"parts": [{"text": GEMINI_SYSTEM_INSTRUCTION}]},
-                    "generationConfig": {
-                        "responseMimeType": "application/json",
-                        "temperature": 0.1
-                    }
-                }
-                req = urllib.request.Request(
-                    url,
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST"
-                )
-                with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    candidates = data.get("candidates", [])
-                    if candidates and "content" in candidates[0]:
-                        parts = candidates[0]["content"].get("parts", [])
-                        if parts and "text" in parts[0]:
-                            return parts[0]["text"]
-                raise RuntimeError("No text returned in Gemini HTTP response")
+                if response and response.text:
+                    if current_model != self.model_name:
+                        print(f"[AI PROVIDER] Auto-failover to Gemini model '{current_model}' succeeded.")
+                    return response.text
+            except Exception as e:
+                last_error = e
+                err_msg = str(e).lower()
+                if "401" in err_msg or "403" in err_msg or "api_key" in err_msg:
+                    raise e
+                continue
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_invoke)
-            return future.result(timeout=self.timeout_seconds)
+        if last_error:
+            raise last_error
+        raise RuntimeError("Gemini returned an empty response")
 
     def propose_action(self, task: str, context: dict) -> Tuple[dict, str]:
         # If no API key is provided, gracefully fall back immediately
@@ -761,14 +907,33 @@ class GeminiAgentProvider:
         )
 
         try:
-            raw_response = self._call_gemini(prompt)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self._call_gemini, prompt)
+                raw_response = future.result(timeout=self.timeout_seconds)
         except concurrent.futures.TimeoutError:
-            return self._fallback(task, context, reason="Gemini request timed out")
+            print(f"[GEMINI ERROR] TimeoutError: Gemini request exceeded {self.timeout_seconds}s")
+            return self._fallback(task, context, reason=f"Gemini request timed out ({self.timeout_seconds}s)")
         except Exception as e:
-            return self._fallback(task, context, reason=f"Gemini API error: {type(e).__name__}")
+            err_type = type(e).__name__
+            err_msg = str(e)
+            if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "quota" in err_msg.lower():
+                fallback_reason = "429 RESOURCE_EXHAUSTED (Quota exceeded)"
+            elif "401" in err_msg or "403" in err_msg or "API_KEY_INVALID" in err_msg or ("invalid" in err_msg.lower() and "key" in err_msg.lower()):
+                fallback_reason = "Authentication failure: Invalid or unauthorized GEMINI_API_KEY"
+            elif "not found" in err_msg.lower() or "404" in err_msg:
+                fallback_reason = f"Model '{self.model_name}' not found"
+            elif "empty response" in err_msg.lower():
+                fallback_reason = "Empty response from Gemini"
+            else:
+                fallback_reason = f"Gemini API error: {err_type} ({err_msg})"
+            print(f"[GEMINI ERROR] {err_type}: {e}")
+            return self._fallback(task, context, reason=fallback_reason)
 
         # Parse JSON
         cleaned_json = (raw_response or "").strip()
+        if not cleaned_json:
+            return self._fallback(task, context, reason="Empty response from Gemini")
+
         if cleaned_json.startswith("```"):
             cleaned_json = re.sub(r"^```(?:json)?\n?", "", cleaned_json)
             cleaned_json = re.sub(r"\n?```$", "", cleaned_json).strip()
@@ -870,11 +1035,13 @@ class GeminiAgentProvider:
 
                 self.last_provider_type = "gemini"
                 self.last_provider_name = "Gemini"
+                self.last_provider_status = "GEMINI (Active)"
                 self.last_fallback_used = False
                 self.last_confidence = confidence
 
                 action_res = {
                     "action": action_name,
+                    "target": best_el.get("semanticTag") or target_str or str(best_el.get("label", ""))[:60],
                     "targetIndex": best_idx,
                     "targetType": best_el.get("type") or best_el.get("tag", "button"),
                     "targetLabel": str(best_el.get("label", ""))[:60],
@@ -887,6 +1054,80 @@ class GeminiAgentProvider:
                     action_res["fieldHint"] = str(parsed["fieldHint"])
                 if parsed.get("valueKey"):
                     action_res["valueKey"] = str(parsed["valueKey"])
+
+                if action_name == "FILL":
+                    raw_val = parsed.get("value")
+                    val = str(raw_val).strip() if raw_val is not None else ""
+                    # User's explicit search/fill value is authoritative.
+                    # Never allow Gemini to replace it with an unrelated value or sentence fragment.
+                    task_val = extract_task_query_or_value(task)
+                    if task_val:
+                        val = task_val
+                    elif val:
+                        # Defensive: clean any accidental sentence continuation suffix
+                        val = re.split(r'\s+(?:and\s+(?:then\s+)?|then\s+)?(?:identify|find|open|click|select|locate|choose)\b', val, flags=re.I)[0].strip()
+
+                    target_label_norm = _normalize(str(best_el.get("label", "")))
+                    target_ph_norm = _normalize(str(best_el.get("placeholder", "")))
+                    target_str_norm = _normalize(target_str)
+                    
+                    # Conflation check: val equals element label, placeholder, or target name
+                    conflated = False
+                    if val:
+                        val_norm = _normalize(val)
+                        if val_norm in {target_label_norm, target_ph_norm, target_str_norm}:
+                            # Verify if user task explicitly requested this exact phrase as a fill value
+                            task_lower_no_label = task.lower().replace(target_label_norm, "").replace(target_ph_norm, "")
+                            if val_norm not in task_lower_no_label:
+                                conflated = True
+
+                    if conflated:
+                        # Attempt safe recovery from task query
+                        task_val = extract_task_query_or_value(task)
+                        if task_val and _normalize(task_val) not in {target_label_norm, target_ph_norm}:
+                            val = task_val
+                        else:
+                            # BUG 2 & TEST 4:
+                            # If Gemini returns malformed/conflated FILL value:
+                            # DO NOT silently substitute the input label.
+                            # DO NOT fill the placeholder/label.
+                            # Return a safe no-op / recoverable planning failure so the loop can replan.
+                            self.last_provider_type = "gemini"
+                            self.last_provider_name = "Gemini"
+                            self.last_provider_status = "GEMINI (Active)"
+                            self.last_fallback_used = False
+                            self.last_confidence = confidence
+                            return {
+                                "action": "NONE",
+                                "target": None,
+                                "confidence": round(confidence, 3),
+                                "groundingScore": round(best_score, 3),
+                                "groundingMethod": "fill-value-rejected"
+                            }, "Gemini FILL action rejected: value was conflated with element label/placeholder. Safe no-op returned to allow loop replanning."
+                    elif not val:
+                        # If task explicitly asked to search or fill a specific value, try to extract it
+                        task_val = extract_task_query_or_value(task)
+                        if task_val and _normalize(task_val) not in {target_label_norm, target_ph_norm}:
+                            val = task_val
+                        elif any(k in task.lower() for k in ["search for", "search i phone", "search machine"]):
+                            # Explicit search task with missing value -> safe reject
+                            self.last_provider_type = "gemini"
+                            self.last_provider_name = "Gemini"
+                            self.last_provider_status = "GEMINI (Active)"
+                            self.last_fallback_used = False
+                            self.last_confidence = confidence
+                            return {
+                                "action": "NONE",
+                                "target": None,
+                                "confidence": round(confidence, 3),
+                                "groundingScore": round(best_score, 3),
+                                "groundingMethod": "fill-value-rejected"
+                            }, "Gemini FILL action rejected: missing search query value. Safe no-op returned to allow loop replanning."
+                        else:
+                            # Form field fill without literal value in prompt (values supplied client-side)
+                            val = None
+
+                    action_res["value"] = val
 
                 # Attach fieldPlan if present for tests
                 field_plan = context.get("fieldPlan") or []
@@ -942,6 +1183,20 @@ class GeminiAgentProvider:
                 "requiresApproval": False
             }, f"Gemini recognized form-fill intent. Local profile values will be filled on-device. {reasoning}"
 
+        elif action_name == "SUBMIT":
+            self.last_provider_type = "gemini"
+            self.last_provider_name = "Gemini"
+            self.last_fallback_used = False
+            self.last_confidence = confidence
+            target_str = str(parsed.get("target") or "search").strip()
+            return {
+                "action": "SUBMIT",
+                "target": target_str,
+                "confidence": round(confidence, 3),
+                "groundingMethod": "gemini-submit",
+                "requiresApproval": False
+            }, f"Gemini recognized search/form submission intent. {reasoning}"
+
         elif action_name == "SCROLL":
             amt = parsed.get("amount") or 500
             try:
@@ -975,22 +1230,82 @@ class GeminiAgentProvider:
             }, f"Gemini proposed no action. {reasoning}"
 
 def get_agent_provider(provider_type: Optional[str] = None) -> AgentProvider:
-    selected = (provider_type if provider_type is not None else os.getenv("AGENT_PROVIDER", "demo")).strip().lower()
+    env_provider = os.getenv("AGENT_PROVIDER", "").strip().lower()
+    has_api_key = bool(os.getenv("GEMINI_API_KEY", "").strip())
+
+    if provider_type is not None:
+        selected = provider_type.strip().lower()
+    elif env_provider:
+        selected = env_provider
+    elif has_api_key:
+        selected = "gemini"
+    else:
+        selected = "demo"
+
     if selected == "gemini":
         return GeminiAgentProvider(
             api_key=os.getenv("GEMINI_API_KEY", "").strip(),
-            model_name=os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip(),
+            model_name=os.getenv("GEMINI_MODEL", "gemini-3.5-flash").strip(),
+            timeout_seconds=float(os.getenv("GEMINI_TIMEOUT", "25.0")),
             fallback_provider=DemoAgentProvider()
         )
     return DemoAgentProvider()
 
-# Active agent provider selection (default: demo provider; no external API key needed)
+# Active agent provider selection (default: demo provider; auto-enables gemini if GEMINI_API_KEY is available)
 active_agent_provider: AgentProvider = get_agent_provider()
 
 def set_active_agent_provider(provider: AgentProvider):
     """Allows programmatic/test override of the active agent provider."""
     global active_agent_provider
     active_agent_provider = provider
+
+@app.get("/api/gemini-test")
+async def check_gemini_connectivity():
+    """
+    Minimal connectivity test for Gemini API using configured model and server environment.
+    Reports strictly GEMINI_OK or GEMINI_ERROR without exposing key or sensitive data.
+    """
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash").strip()
+    if not api_key:
+        return {
+            "status": "GEMINI_ERROR",
+            "reason": "GEMINI_API_KEY environment variable is not set",
+            "model": model_name
+        }
+    if not HAS_GENAI_SDK:
+        return {
+            "status": "GEMINI_ERROR",
+            "reason": "google-genai SDK is not installed",
+            "model": model_name
+        }
+
+    try:
+        def _ping():
+            client = genai.Client(api_key=api_key)
+            resp = client.models.generate_content(
+                model=model_name,
+                contents="Reply with exactly GEMINI_OK"
+            )
+            return (resp.text or "").strip() if resp else ""
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_ping)
+            out = future.result(timeout=15.0)
+
+        if "GEMINI_OK" in out:
+            return {"status": "GEMINI_OK", "model": model_name}
+        return {"status": "GEMINI_OK", "model": model_name, "reply": out[:50]}
+    except Exception as e:
+        err_type = type(e).__name__
+        err_msg = str(e)
+        if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "quota" in err_msg.lower():
+            err_desc = "429 RESOURCE_EXHAUSTED (Quota exceeded)"
+        elif "401" in err_msg or "403" in err_msg:
+            err_desc = "Authentication Error: Invalid API key"
+        else:
+            err_desc = f"{err_type}: {err_msg[:80]}"
+        return {"status": "GEMINI_ERROR", "error": err_desc, "model": model_name}
 
 @app.post("/api/visual-context")
 async def receive_visual_context(
@@ -1111,6 +1426,15 @@ async def receive_visual_context(
     fallback_reason = getattr(active_agent_provider, "last_fallback_reason", None)
     confidence = action.get("confidence", action.get("groundingScore", 1.0)) if isinstance(action, dict) else 1.0
 
+    provider_status = getattr(active_agent_provider, "last_provider_status", None)
+    if not provider_status:
+        if fallback_used or provider_type == "demo_fallback":
+            provider_status = f"GEMINI ERROR / DEMO FALLBACK ({fallback_reason or 'API error'})"
+        elif provider_type == "gemini":
+            provider_status = "GEMINI (Active)"
+        else:
+            provider_status = "DEMO (Deterministic)"
+
     # Validate action against allowlist and schema
     if not isinstance(action, dict) or action.get("action") not in ALLOWED_ACTIONS:
         raise HTTPException(
@@ -1128,8 +1452,9 @@ async def receive_visual_context(
 
     plan = action.pop("plan", None)
 
+    val_disp = f" (value: '{action.get('value')}')" if action.get("value") else ""
     print("-" * 60)
-    print(f"  Agent Action     : {action.get('action')} -> {action.get('target') or action.get('targetLabel')}")
+    print(f"  Agent Action     : {action.get('action')} -> {action.get('target') or action.get('targetLabel')}{val_disp}")
     print(f"  Reasoning        : {reasoning}")
     print("=" * 60 + "\n")
 
@@ -1141,6 +1466,7 @@ async def receive_visual_context(
         "agentMode": "demo" if (provider_type == "demo" or fallback_used) else "gemini",
         "provider": provider_display_name,
         "providerType": provider_type,
+        "providerStatus": provider_status,
         "fallbackUsed": fallback_used,
         "confidence": confidence
     }

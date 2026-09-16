@@ -14,7 +14,8 @@ from main import (
     receive_context,
     receive_visual_context,
     MAX_SCREENSHOT_BYTES,
-    DemoAgentProvider
+    DemoAgentProvider,
+    set_active_agent_provider
 )
 
 def test_legacy_context_click():
@@ -110,6 +111,7 @@ def test_visual_context_valid_click():
         "totalRedactedRegionCount": 3
     })
 
+    set_active_agent_provider(DemoAgentProvider())
     res = asyncio.run(receive_visual_context(
         sanitizedScreenshot=dummy_img,
         task="Find the Submit button and click it",

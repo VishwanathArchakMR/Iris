@@ -2,154 +2,821 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Visual Perception Agent</title>
+  <title>SIH 2026 — On-Device Visual Perception Agent</title>
   <style>
-    body {
-      font-family: sans-serif;
-      min-width: 380px;
-      max-height: 600px;
-      overflow-y: auto;
-      padding: 12px;
-      margin: 0;
+    :root {
+      --primary: #1e40af;
+      --primary-light: #3b82f6;
+      --primary-subtle: #eff6ff;
+      --accent: #059669;
+      --accent-subtle: #ecfdf5;
+      --warning: #d97706;
+      --warning-subtle: #fffbeb;
+      --danger: #dc2626;
+      --danger-subtle: #fef2f2;
+      --text-main: #0f172a;
+      --text-muted: #64748b;
+      --border-color: #cbd5e1;
+      --card-bg: #ffffff;
+      --panel-bg: #f8fafc;
+    }
+
+    * {
       box-sizing: border-box;
     }
-    h3 {
-      margin-top: 0;
-      margin-bottom: 8px;
-      font-size: 15px;
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      min-width: 520px;
+      max-width: 550px;
+      max-height: 600px;
+      overflow-y: auto;
+      padding: 12px 14px;
+      margin: 0;
+      background-color: #f1f5f9;
+      color: var(--text-main);
+      line-height: 1.4;
     }
-    button {
-      width: 100%;
-      padding: 8px;
-      font-size: 14px;
-      cursor: pointer;
+
+    /* Scrollbar */
+    body::-webkit-scrollbar {
+      width: 6px;
+    }
+    body::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 3px;
+    }
+
+    /* Header Bar */
+    .header-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid #e2e8f0;
     }
+    .header-title {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 700;
+      color: #0f172a;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .header-sub {
+      font-size: 10.5px;
+      color: #64748b;
+      font-weight: normal;
+      margin-top: 1px;
+    }
+    .header-controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .live-status-badge {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      padding: 3px 8px;
+      border-radius: 9999px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: #e2e8f0;
+      color: #334155;
+      border: 1px solid #cbd5e1;
+    }
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #64748b;
+    }
+    .live-status-badge.status-ready .status-dot { background: #059669; }
+    .live-status-badge.status-active .status-dot {
+      background: #2563eb;
+      animation: pulse-dot 1.2s infinite;
+    }
+    .live-status-badge.status-warning .status-dot { background: #d97706; }
+    .live-status-badge.status-error .status-dot { background: #dc2626; }
+
+    @keyframes pulse-dot {
+      0% { transform: scale(0.9); opacity: 0.7; }
+      50% { transform: scale(1.3); opacity: 1; }
+      100% { transform: scale(0.9); opacity: 0.7; }
+    }
+
+    .view-toggle-btn {
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      padding: 3px 8px;
+      border-radius: 5px;
+      font-size: 10.5px;
+      font-weight: 600;
+      color: #334155;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .view-toggle-btn:hover {
+      background: #f8fafc;
+      border-color: #94a3b8;
+    }
+
+    /* Cards */
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 10px;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    }
+
+    .card-title {
+      font-size: 11.5px;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      color: #334155;
+      margin-bottom: 6px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    /* Feature 1: Visual Agent Pipeline */
+    .pipeline-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 5px;
+      margin-bottom: 2px;
+    }
+    .pipeline-stage {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 6px 4px;
+      text-align: center;
+      transition: all 0.2s ease;
+      min-width: 0;
+    }
+    .pipeline-stage-num {
+      font-size: 8px;
+      font-weight: 700;
+      color: #94a3b8;
+      text-transform: uppercase;
+      margin-bottom: 1px;
+    }
+    .pipeline-stage-name {
+      font-size: 9.5px;
+      font-weight: 700;
+      color: #475569;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .pipeline-stage-status {
+      font-size: 8.5px;
+      font-weight: 600;
+      margin-top: 3px;
+      padding: 1px 3px;
+      border-radius: 3px;
+      display: block;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      background: #f1f5f9;
+      color: #64748b;
+    }
+    .pipeline-stage.pending {
+      opacity: 0.65;
+    }
+    .pipeline-stage.active {
+      background: #eff6ff;
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+      animation: pulse-stage 1.5s infinite;
+    }
+    .pipeline-stage.active .pipeline-stage-name {
+      color: #1d4ed8;
+    }
+    .pipeline-stage.active .pipeline-stage-status {
+      background: #dbeafe;
+      color: #1e40af;
+      font-weight: 700;
+    }
+    .pipeline-stage.completed {
+      background: #f0fdf4;
+      border-color: #86efac;
+    }
+    .pipeline-stage.completed .pipeline-stage-name {
+      color: #166534;
+    }
+    .pipeline-stage.completed .pipeline-stage-status {
+      background: #dcfce7;
+      color: #15803d;
+    }
+    .pipeline-stage.failed {
+      background: #fef2f2;
+      border-color: #fca5a5;
+    }
+    .pipeline-stage.failed .pipeline-stage-name {
+      color: #b91c1c;
+    }
+    .pipeline-stage.failed .pipeline-stage-status {
+      background: #fee2e2;
+      color: #b91c1c;
+    }
+
+    @keyframes pulse-stage {
+      0% { border-color: #93c5fd; }
+      50% { border-color: #2563eb; }
+      100% { border-color: #93c5fd; }
+    }
+
+    /* Feature 2: Current Action Card */
+    .current-action-card {
+      background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+      border: 1.5px solid #3b82f6;
+      border-left: 5px solid #2563eb;
+    }
+    .action-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px 12px;
+      font-size: 11px;
+      margin-top: 4px;
+    }
+    .action-row {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+    .action-label {
+      font-weight: 600;
+      color: #64748b;
+      font-size: 10px;
+      text-transform: uppercase;
+      min-width: 65px;
+    }
+    .action-val {
+      font-weight: 600;
+      color: #0f172a;
+      word-break: break-word;
+    }
+    .action-badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      font-family: monospace;
+    }
+    .badge-action-fill { background: #ede9fe; color: #6d28d9; border: 1px solid #ddd6fe; }
+    .badge-action-click { background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; }
+    .badge-action-submit { background: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
+    .badge-action-none { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
+
+    /* Feature 4: Grounding & Element Inspection Panel */
+    .grounding-box {
+      background: #fdf4ff;
+      border: 1px solid #f0abfc;
+      border-left: 4px solid #c026d3;
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 11px;
+      margin-top: 4px;
+    }
+    .grounding-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 4px 10px;
+      margin-top: 4px;
+    }
+    .grounding-prop {
+      font-size: 10.5px;
+    }
+    .grounding-prop strong {
+      color: #701a75;
+      font-size: 10px;
+    }
+    .grounding-val {
+      font-family: monospace;
+      color: #1e1b4b;
+      font-weight: 600;
+    }
+
+    /* Feature 5: Perception Preview & Canvas */
+    .perception-meta-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-bottom: 6px;
+    }
+    .chip {
+      font-size: 9.5px;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: #f1f5f9;
+      color: #334155;
+      border: 1px solid #e2e8f0;
+    }
+    .chip-active {
+      background: #ecfdf5;
+      color: #047857;
+      border-color: #a7f3d0;
+    }
+    .chip-danger {
+      background: #fef2f2;
+      color: #b91c1c;
+      border-color: #fecaca;
+    }
+    .preview-canvas-container {
+      position: relative;
+      width: 100%;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      overflow: hidden;
+      background: #1e293b;
+      max-height: 170px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    #perceptionCanvasOverlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    /* Feature 6: Data Boundary Flow */
+    .boundary-flow {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      align-items: center;
+      gap: 4px;
+      background: #f8fafc;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      padding: 8px;
+      font-size: 10px;
+      text-align: center;
+    }
+    .boundary-node {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 6px 4px;
+    }
+    .boundary-node.local {
+      border-color: #86efac;
+      background: #f0fdf4;
+    }
+    .boundary-node.local strong { color: #166534; }
+    .boundary-node.gateway {
+      border-color: #93c5fd;
+      background: #eff6ff;
+    }
+    .boundary-node.gateway strong { color: #1e40af; }
+    .boundary-node.cloud {
+      border-color: #c4b5fd;
+      background: #f5f3ff;
+    }
+    .boundary-node.cloud strong { color: #5b21b6; }
+    .boundary-arrow {
+      color: #94a3b8;
+      font-weight: 700;
+      font-size: 13px;
+    }
+    .boundary-list {
+      margin: 3px 0 0 0;
+      padding: 0;
+      list-style: none;
+      font-size: 9px;
+      color: #475569;
+      text-align: left;
+    }
+    .boundary-list li {
+      margin-bottom: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Buttons */
+    button.primary-btn {
+      background: #2563eb;
+      color: #ffffff;
+      font-weight: 700;
+      border: none;
+      border-radius: 6px;
+      padding: 9px;
+      cursor: pointer;
+      width: 100%;
+      font-size: 13px;
+      transition: background 0.15s ease;
+    }
+    button.primary-btn:hover {
+      background: #1d4ed8;
+    }
+    button.secondary-btn {
+      background: #ffffff;
+      color: #334155;
+      font-weight: 600;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      padding: 6px 8px;
+      cursor: pointer;
+      width: 100%;
+      font-size: 11px;
+      margin-top: 5px;
+      transition: all 0.15s ease;
+    }
+    button.secondary-btn:hover {
+      background: #f8fafc;
+      border-color: #94a3b8;
+    }
+
+    /* Timeline in trace container */
+    .timeline-item {
+      display: flex;
+      gap: 8px;
+      padding: 6px 4px;
+      border-bottom: 1px solid #e2e8f0;
+      align-items: flex-start;
+      font-size: 10.5px;
+    }
+    .timeline-item:last-child {
+      border-bottom: none;
+    }
+    .timeline-step-badge {
+      font-size: 9px;
+      font-weight: 700;
+      padding: 2px 5px;
+      border-radius: 4px;
+      background: #e2e8f0;
+      color: #1e293b;
+      white-space: nowrap;
+    }
+
+    /* Detailed Mode sections collapsible */
+    .detailed-section {
+      transition: all 0.2s ease;
+    }
+    body.mode-demo .detailed-section {
+      display: none;
+    }
+
     textarea {
       width: 100%;
       box-sizing: border-box;
       resize: vertical;
       font-family: monospace;
-      font-size: 12px;
+      font-size: 11px;
       padding: 6px;
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      background: #ffffff;
     }
   </style>
 </head>
-<body>
-  <h3>Visual Perception Agent</h3>
-
-  <!-- Milestone 13: Browser Agent Task Input -->
-  <div style="background: #eef5fc; padding: 10px; border-radius: 6px; border: 1px solid #bbdefb; margin-bottom: 10px;">
-    <label for="taskInput" style="display: block; font-weight: bold; font-size: 13px; color: #0d47a1; margin-bottom: 4px;">Browser Agent Task (Milestone 13 Gateway):</label>
-    <textarea id="taskInput" rows="2" placeholder="e.g. Find the Submit button and click it." style="width: 100%; box-sizing: border-box; font-family: sans-serif; font-size: 13px; padding: 6px; border: 1px solid #90caf9; border-radius: 4px; resize: vertical;">Find the Submit button and click it.</textarea>
-    <button id="runAgentTaskBtn" style="background-color: #1565c0; color: #ffffff; font-weight: bold; border: none; border-radius: 4px; padding: 9px; cursor: pointer; width: 100%; margin-top: 6px; margin-bottom: 0;">Run Agent Task</button>
-  </div>
-
-  <button id="captureBtn">Capture Page Info (Local Pipeline Only)</button>
-
-  <!-- Local Reasoning & Safety Planner Panel -->
-  <label for="reasoningPlannerContainer" style="display: block; margin-top: 10px;"><strong>Local Reasoning &amp; Safety Planner (Deterministic &amp; On-Device):</strong></label>
-  <div id="reasoningPlannerContainer" style="border: 1px solid #7c3aed; padding: 10px; border-radius: 6px; background: #fdf4ff; font-size: 12px; line-height: 1.5; color: #1e1b4b;">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-      <span style="font-weight: bold; color: #6d28d9;">ON-DEVICE REASONING &amp; SAFETY</span>
-      <span id="plannerEngineBadge" style="font-size: 10px; background: #ede9fe; color: #5b21b6; border: 1px solid #c4b5fd; padding: 2px 6px; border-radius: 9999px; font-weight: 600;">DETERMINISTIC &bull; AUDITABLE</span>
+<body class="mode-demo">
+  <!-- Top Header Bar with Live Agent Status & Demo Mode Toggle -->
+  <div class="header-bar">
+    <div>
+      <div class="header-title">
+        <span>🤖</span>
+        <span>SIH 2026 Visual Perception Agent</span>
+      </div>
+      <div class="header-sub">Lightweight On-Device Perception &bull; Client-Side Safety Gate</div>
     </div>
-
-    <div><strong>Task Understanding:</strong> <span id="plannerTaskUnderstanding" style="font-style: italic; color: #4338ca;">Awaiting task input...</span></div>
-    
-    <div style="margin-top: 6px;">
-      <strong>Execution Plan:</strong>
-      <div id="plannerExecutionPlan" style="margin-top: 4px; background: #ffffff; border: 1px solid #e9d5ff; border-radius: 4px; padding: 6px; max-height: 120px; overflow-y: auto; font-family: monospace; font-size: 11px;">
-        (No task planned yet)
+    <div class="header-controls">
+      <div id="liveAgentStatusBadge" class="live-status-badge status-ready">
+        <span class="status-dot"></span>
+        <span id="liveAgentStatusText">READY</span>
       </div>
-    </div>
-
-    <div style="margin-top: 6px;">
-      <strong>Reasoning &amp; Safety Trace:</strong>
-      <div id="plannerReasoningTrace" style="margin-top: 4px; background: #ffffff; border: 1px solid #e9d5ff; border-radius: 4px; padding: 6px; max-height: 100px; overflow-y: auto; font-family: monospace; font-size: 11px; line-height: 1.4;">
-        (Trace will appear here)
-      </div>
-    </div>
-
-    <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed #c4b5fd;">
-      <div><strong>Action Risk Classification:</strong> <span id="plannerRiskBadge" style="font-weight: bold; padding: 2px 6px; border-radius: 3px; font-size: 11px; background: #e0e7ff; color: #3730a3;">LOW</span></div>
-      <div><strong>Safety Gate Decision:</strong> <span id="plannerSafetyDecision" style="font-weight: bold; color: #166534;">PASSED (Safe Action)</span></div>
-      <div><strong>Human Approval:</strong> <span id="plannerApprovalStatus" style="font-weight: bold; color: #1e1b4b;">NOT REQUIRED</span></div>
-    </div>
-
-    <!-- Human Approval Container in Popup -->
-    <div id="popupApprovalContainer" style="display: none; margin-top: 8px; padding: 10px; border-radius: 6px; background: #fff1f2; border: 2px solid #f43f5e; box-shadow: 0 4px 6px -1px rgba(244, 63, 94, 0.2);">
-      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
-        <span style="font-weight: bold; color: #be123c; font-size: 12px;">&#9888; HUMAN APPROVAL MANDATORY</span>
-        <span style="font-size: 10px; background: #e11d48; color: #ffffff; padding: 2px 6px; border-radius: 9999px; font-weight: bold;">HIGH IMPACT</span>
-      </div>
-      <div style="font-size: 11px; color: #881337; margin-bottom: 6px; line-height: 1.4;">
-        A high-impact action has been paused by the local safety gate.
-      </div>
-      <div style="background: #ffffff; border: 1px solid #fecdd3; border-radius: 4px; padding: 6px; font-size: 11px; margin-bottom: 8px; line-height: 1.5;">
-        <div><strong>Action:</strong> <span id="popupApprovalAction" style="color: #0284c7; font-family: monospace; font-weight: bold;">CLICK &rarr; Submit</span></div>
-        <div><strong>Reason:</strong> <span id="popupApprovalReason" style="color: #4b5563;">This action submits form data.</span></div>
-      </div>
-      <div style="display: flex; gap: 8px;">
-        <button id="popupBtnApprove" style="flex: 1; background: #059669; color: #ffffff; border: none; border-radius: 4px; padding: 8px; font-weight: bold; font-size: 12px; cursor: pointer;">Approve &amp; Continue</button>
-        <button id="popupBtnCancel" style="flex: 1; background: #e11d48; color: #ffffff; border: none; border-radius: 4px; padding: 8px; font-weight: bold; font-size: 12px; cursor: pointer;">Cancel</button>
-      </div>
+      <button id="viewModeToggleBtn" class="view-toggle-btn" title="Toggle between Stage Presentation and Deep Diagnostics">Detailed View</button>
     </div>
   </div>
 
-  <!-- Milestone 13: Browser Agent Status Panel -->
-  <label for="agentStatusContainer" style="display: block; margin-top: 10px;"><strong>Browser Agent Status (Milestone 13 Gateway):</strong></label>
-  <div id="agentStatusContainer" style="border: 1px solid #1565c0; padding: 10px; border-radius: 6px; background: #f0f7ff; font-size: 12px; line-height: 1.5; color: #222;">
-    <div><strong>Task:</strong> <span id="agentTaskText">None</span></div>
-    <div><strong>Request ID:</strong> <span id="agentRequestId" style="font-family: monospace;">-</span></div>
-    <div><strong>Local screenshot:</strong> <span id="agentScreenshotStatus">Awaiting capture</span></div>
-    <div><strong>Local privacy:</strong> <span id="agentPrivacyStatus" style="color: #2e7d32; font-weight: bold;">ACTIVE</span></div>
-    <div><strong>DOM PII detected:</strong> <span id="agentDomPiiCount">-</span></div>
-    <div><strong>OCR sensitive regions:</strong> <span id="agentOcrPiiCount">-</span></div>
-    <div><strong>Sensitive regions (Total):</strong> <span id="agentSensitiveCount">-</span></div>
-    <div><strong>Redaction:</strong> <span id="agentRedactionStatus">-</span></div>
-    <div><strong>Sanitized visual context:</strong> <span id="agentSanitizedStatus">Awaiting pipeline</span></div>
-    <div style="margin-top: 4px; margin-bottom: 4px;">
-      <strong>Raw screenshot:</strong>
-      <span id="agentRawUploadStatus" style="color: #c62828; font-weight: bold; background: #ffebee; padding: 2px 6px; border-radius: 3px; border: 1px solid #ef9a9a;">BLOCKED</span>
+  <!-- Browser Agent Task Input Card -->
+  <div class="card" style="border-color: #93c5fd; background: #f0f7ff;">
+    <div class="card-title" style="color: #1e40af;">
+      <span>Browser Agent Task (Milestone 13 Gateway)</span>
+      <span id="agentModeBadge" style="font-size: 9.5px; background: #dbeafe; color: #1e40af; padding: 2px 6px; border-radius: 4px; text-transform: none;">Gemini + Local Safety</span>
     </div>
-    <div style="margin-top: 2px; margin-bottom: 4px;">
-      <strong>Sanitized context:</strong>
-      <span id="agentSanitizedUploadStatus" style="color: #2e7d32; font-weight: bold; background: #e8f5e9; padding: 2px 6px; border-radius: 3px; border: 1px solid #a5d6a7;">READY</span>
+    <textarea id="taskInput" rows="2" placeholder="e.g. Find the search box, search for iPhone 15 and identify the most relevant product, open it, find the Add to Cart button, and click it." style="width: 100%; box-sizing: border-box; font-family: sans-serif; font-size: 12px; padding: 6px 8px; border: 1px solid #bfdbfe; border-radius: 5px; resize: vertical;">Find the search box, search for iPhone 15 and identify the most relevant product, open it, find the Add to Cart button, and click it.</textarea>
+    <div style="display: flex; gap: 6px; margin-top: 6px;">
+      <button id="runAgentTaskBtn" class="primary-btn">▶ Run Agent Task</button>
+      <button id="captureBtn" class="secondary-btn" style="width: auto; margin-top: 0; padding: 8px 12px; white-space: nowrap;" title="Run on-device perception without action execution">Capture Local</button>
     </div>
-    <div><strong>Sensitive data:</strong> <span id="agentSensitiveDataStatus" style="color: #2e7d32; font-weight: bold;">LOCAL ONLY</span></div>
-    <div><strong>Reasoning:</strong> <span id="agentReasoningLocation" style="color: #2e7d32; font-weight: bold;">LOCAL</span></div>
-    <div><strong>Safety decision:</strong> <span id="agentSafetyDecisionStatus" style="color: #2e7d32; font-weight: bold;">LOCAL</span></div>
-    <div><strong>Human approval:</strong> <span id="agentApprovalGateStatus" style="color: #1565c0; font-weight: bold;">ENFORCED</span></div>
-    <div><strong>Agent:</strong> <span id="agentModeStatus" style="font-weight: bold; color: #0d47a1;">DEMO MODE</span> <span style="font-size: 11px; color: #555;">(Deterministic local agent; no external AI API keys)</span></div>
-    <div><strong>Agent Loop:</strong> <span id="agentStepText" style="font-weight: bold; color: #1565c0;">-</span></div>
-    <div><strong>Change Verification:</strong> <span id="agentVerificationText" style="font-weight: bold; color: #333;">Awaiting action...</span></div>
-    <div><strong>Agent action:</strong> <span id="agentActionText" style="font-family: monospace; font-weight: bold;">-</span></div>
-    <div><strong>Agent reasoning:</strong> <span id="agentReasoningText" style="font-style: italic; color: #444;">-</span></div>
-    <div style="margin-top: 4px; padding-top: 4px; border-top: 1px dashed #90caf9;">
-      <div><strong>Grounding method:</strong> <span id="groundingMethodText" style="font-family: monospace;">-</span></div>
-      <div><strong>Grounding score:</strong> <span id="groundingScoreText" style="font-family: monospace;">-</span></div>
-      <div><strong>Grounded element:</strong> <span id="groundedElementText" style="font-family: monospace;">-</span></div>
-      <div><strong>FILL step status:</strong> <span id="fillStepStatus" style="font-family: monospace;">-</span></div>
-      <div style="margin-top: 3px;">
-        <strong>Field values:</strong>
-        <span id="fieldValuesPrivacyNotice" style="color: #2e7d32; font-weight: bold; background: #e8f5e9; padding: 2px 6px; border-radius: 3px; border: 1px solid #a5d6a7;">Kept local (not sent)</span>
+  </div>
+
+  <!-- FEATURE 1: Prominent Visual Agent Pipeline (Stage Demonstration) -->
+  <div class="card" style="padding: 8px 10px;">
+    <div class="card-title">
+      <span>Agent Execution Pipeline</span>
+      <span id="pipelineStepCounter" style="font-size: 9.5px; color: #64748b; font-weight: 600; text-transform: none;">Awaiting Task</span>
+    </div>
+    <div class="pipeline-grid" id="visualAgentPipeline">
+      <!-- Stage 1: Perception -->
+      <div id="stagePerception" class="pipeline-stage pending">
+        <div class="pipeline-stage-num">1. PERCEIVE</div>
+        <div class="pipeline-stage-name">Perception</div>
+        <span class="pipeline-stage-status" id="stagePerceptionStatus">Pending</span>
+      </div>
+      <!-- Stage 2: Reasoning -->
+      <div id="stageReasoning" class="pipeline-stage pending">
+        <div class="pipeline-stage-num">2. REASON</div>
+        <div class="pipeline-stage-name">Reasoning</div>
+        <span class="pipeline-stage-status" id="stageReasoningStatus">Pending</span>
+      </div>
+      <!-- Stage 3: Grounding -->
+      <div id="stageGrounding" class="pipeline-stage pending">
+        <div class="pipeline-stage-num">3. GROUND</div>
+        <div class="pipeline-stage-name">Grounding</div>
+        <span class="pipeline-stage-status" id="stageGroundingStatus">Pending</span>
+      </div>
+      <!-- Stage 4: Safety -->
+      <div id="stageSafety" class="pipeline-stage pending">
+        <div class="pipeline-stage-num">4. SAFETY</div>
+        <div class="pipeline-stage-name">Safety Gate</div>
+        <span class="pipeline-stage-status" id="stageSafetyStatus">Pending</span>
+      </div>
+      <!-- Stage 5: Execution -->
+      <div id="stageExecution" class="pipeline-stage pending">
+        <div class="pipeline-stage-num">5. EXECUTE</div>
+        <div class="pipeline-stage-name">Execution</div>
+        <span class="pipeline-stage-status" id="stageExecutionStatus">Pending</span>
+      </div>
+      <!-- Stage 6: Verification -->
+      <div id="stageVerification" class="pipeline-stage pending">
+        <div class="pipeline-stage-num">6. VERIFY</div>
+        <div class="pipeline-stage-name">Verification</div>
+        <span class="pipeline-stage-status" id="stageVerificationStatus">Pending</span>
       </div>
     </div>
-    <div><strong>Local safety validation:</strong> <span id="agentSafetyStatus" style="font-weight: bold;">-</span></div>
-    <div><strong>Execution result:</strong> <span id="agentExecutionStatus" style="font-weight: bold;">-</span></div>
-    <div><strong>Gateway round-trip latency:</strong> <span id="agentGatewayLatency">-</span></div>
+  </div>
 
-    <!-- Milestone 14: Execution Trace History -->
-    <div style="margin-top: 8px; padding-top: 6px; border-top: 1px dashed #90caf9; font-size: 11px;">
-      <strong style="color: #0d47a1;">Execution Trace History:</strong>
-      <div id="agentTraceContainer" style="max-height: 120px; overflow-y: auto; font-family: monospace; font-size: 10px; margin-top: 4px; background: #ffffff; padding: 6px; border: 1px solid #bbdefb; border-radius: 4px; line-height: 1.4;">
-        (No trace recorded yet)
+  <!-- FEATURE 2: Visually Prominent CURRENT ACTION Card -->
+  <div class="card current-action-card" id="currentActionCard">
+    <div class="card-title" style="color: #1d4ed8;">
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <span style="font-size: 13px;">🎯</span>
+        <span>Current Action</span>
+      </div>
+      <span id="currentActionStepBadge" style="font-size: 10px; background: #dbeafe; color: #1e40af; padding: 2px 7px; border-radius: 4px; font-weight: 700; font-family: monospace;">Awaiting run</span>
+    </div>
+    <div class="action-grid">
+      <div class="action-row">
+        <span class="action-label">Action:</span>
+        <span id="cardActionType" class="action-badge badge-action-none">NONE</span>
+      </div>
+      <div class="action-row">
+        <span class="action-label">Target:</span>
+        <span id="cardActionTarget" class="action-val" style="color: #1e40af;">(None)</span>
+      </div>
+      <div class="action-row">
+        <span class="action-label">Value:</span>
+        <span id="cardActionValue" class="action-val" style="font-family: monospace; color: #047857;">-</span>
+      </div>
+      <div class="action-row">
+        <span class="action-label">Grounding:</span>
+        <span id="cardActionGrounding" class="action-val">-</span>
+      </div>
+      <div class="action-row">
+        <span class="action-label">Risk Level:</span>
+        <span id="cardActionRisk" class="action-badge" style="background: #e0e7ff; color: #3730a3;">LOW</span>
+      </div>
+      <div class="action-row">
+        <span class="action-label">Safety:</span>
+        <span id="cardActionSafety" class="action-val" style="color: #15803d; font-weight: 700;">ALLOWED</span>
+      </div>
+      <div class="action-row" style="grid-column: span 2;">
+        <span class="action-label">Status:</span>
+        <span id="cardActionStatus" class="action-val" style="color: #475569;">Ready to execute</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- FEATURE 4: "Why This Element?" Grounding / Element Inspection Panel -->
+  <div class="card" id="groundingInspectionPanel" style="border-color: #e9d5ff; background: #faf5ff;">
+    <div class="card-title" style="color: #7e22ce;">
+      <div style="display: flex; align-items: center; gap: 5px;">
+        <span>🔍</span>
+        <span>Grounding / Element Inspection ("Why this element?")</span>
+      </div>
+      <span id="inspectGroundingConfidenceBadge" style="font-size: 9.5px; background: #f3e8ff; color: #6b21a8; padding: 1px 6px; border-radius: 4px; font-weight: 700; font-family: monospace;">Conf: -</span>
+    </div>
+    <div style="font-size: 10px; color: #701a75; font-style: italic; margin-bottom: 4px;">
+      Verifiable on-device grounding linking the agent's intent to exact perceived DOM &amp; visual bounding box coordinates:
+    </div>
+    <div class="grounding-grid">
+      <div class="grounding-prop"><strong>Element:</strong> <span id="inspectElementLabel" class="grounding-val">None</span></div>
+      <div class="grounding-prop"><strong>Role / Type:</strong> <span id="inspectElementType" class="grounding-val">-</span></div>
+      <div class="grounding-prop"><strong>DOM Index:</strong> <span id="inspectTargetIndex" class="grounding-val">-</span></div>
+      <div class="grounding-prop"><strong>Method:</strong> <span id="inspectGroundingMethod" class="grounding-val">-</span></div>
+      <div class="grounding-prop" style="grid-column: span 2;"><strong>Bounding Box:</strong> <span id="inspectBoundingBox" class="grounding-val">[x: -, y: -, w: -, h: -]</span></div>
+      <div class="grounding-prop" style="grid-column: span 2;"><strong>Grounded Reason:</strong> <span id="inspectGroundingReason" style="color: #4c1d95; font-size: 10.5px;">-</span></div>
+    </div>
+  </div>
+
+  <!-- FEATURE 5: Local Perception & Screen Preview (with Bounding Box Overlay) -->
+  <div class="card">
+    <div class="card-title">
+      <span>Local Visual Perception Preview</span>
+      <span style="font-size: 9px; background: #ecfdf5; color: #047857; padding: 1px 5px; border-radius: 3px; font-weight: 700;">ON-DEVICE ONLY</span>
+    </div>
+    <!-- Perception Metadata Chips -->
+    <div class="perception-meta-chips">
+      <span class="chip chip-active">Screenshot: <strong id="previewScreenshotStatus">CAPTURED LOCALLY</strong></span>
+      <span class="chip">DOM: <strong id="previewDomCount">0 elements</strong></span>
+      <span class="chip chip-active">OCR: <strong>ON-DEVICE (WASM)</strong></span>
+      <span class="chip">Sensitive: <strong id="previewSensitiveCount">0</strong></span>
+      <span class="chip chip-active">Redaction: <strong id="previewRedactionStatus">ACTIVE</strong></span>
+      <span class="chip">Vision: <strong>SqueezeNet ONNX</strong></span>
+    </div>
+    <div class="preview-canvas-container" id="previewCanvasContainer">
+      <img id="screenshotPreview" src="" alt="Local Screenshot Preview" style="display: none; width: 100%; max-height: 160px; object-fit: contain; background: #fff;" />
+      <canvas id="perceptionCanvasOverlay" style="display: none;"></canvas>
+      <div id="visualStatus" style="font-size: 11px; color: #94a3b8; padding: 20px; text-align: center;">Awaiting capture...</div>
+    </div>
+  </div>
+
+  <!-- FEATURE 6: Data Boundary Architecture (Crucial for SIH stage presentation) -->
+  <div class="card" style="border-color: #cbd5e1; background: #f8fafc;">
+    <div class="card-title">
+      <div style="display: flex; align-items: center; gap: 5px;">
+        <span>🛡️</span>
+        <span>Privacy &amp; Data Boundary Architecture</span>
+      </div>
+      <span style="font-size: 9px; background: #dcfce7; color: #166534; padding: 1px 6px; border-radius: 3px; font-weight: 700;">ZERO RAW PII EXPORT</span>
+    </div>
+    <div class="boundary-flow">
+      <div class="boundary-node local">
+        <strong>1. LOCAL ONLY</strong>
+        <ul class="boundary-list">
+          <li>✓ Raw screenshot</li>
+          <li>✓ Raw OCR text</li>
+          <li>✓ Form values</li>
+          <li>✓ Sensitive coords</li>
+          <li>✓ Local perception</li>
+        </ul>
+      </div>
+      <div class="boundary-arrow">➔</div>
+      <div class="boundary-node gateway">
+        <strong>2. SANITIZED GATEWAY</strong>
+        <ul class="boundary-list">
+          <li>✓ Redacted screenshot</li>
+          <li>✓ Redacted DOM</li>
+          <li>✓ Safe metadata</li>
+          <li>✓ Zero sensitive strings</li>
+        </ul>
+      </div>
+      <div class="boundary-arrow">➔</div>
+      <div class="boundary-node cloud">
+        <strong>3. REASONING</strong>
+        <ul class="boundary-list">
+          <li>✓ Gemini Server</li>
+          <li>✓ Sanitized context</li>
+          <li>✓ Zero raw telemetry</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- FEATURE 3: Execution Timeline & Trace History -->
+  <div class="card">
+    <div class="card-title">
+      <div style="display: flex; align-items: center; gap: 5px;">
+        <span>⏱️</span>
+        <span>Execution Timeline &amp; Trace History</span>
+      </div>
+      <span id="traceStepCount" style="font-size: 9.5px; color: #64748b; font-weight: 600; text-transform: none;">0 steps executed</span>
+    </div>
+    <div id="agentTraceContainer" style="max-height: 140px; overflow-y: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace; font-size: 10px; background: #ffffff; padding: 6px 8px; border: 1px solid #e2e8f0; border-radius: 6px; line-height: 1.4;">
+      <div style="color: #94a3b8; font-style: italic; text-align: center; padding: 8px 0;">No trace recorded yet. Run a task to view execution timeline.</div>
+    </div>
+  </div>
+
+  <!-- Human Approval Container in Popup (Preserved) -->
+  <div id="popupApprovalContainer" style="display: none; margin-bottom: 10px; padding: 10px; border-radius: 6px; background: #fff1f2; border: 2px solid #f43f5e; box-shadow: 0 4px 6px -1px rgba(244, 63, 94, 0.2);">
+    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+      <span style="font-weight: bold; color: #be123c; font-size: 12px;">&#9888; HUMAN APPROVAL MANDATORY</span>
+      <span style="font-size: 10px; background: #e11d48; color: #ffffff; padding: 2px 6px; border-radius: 9999px; font-weight: bold;">HIGH IMPACT</span>
+    </div>
+    <div style="font-size: 11px; color: #881337; margin-bottom: 6px; line-height: 1.4;">
+      A high-impact action has been paused by the local safety gate.
+    </div>
+    <div style="background: #ffffff; border: 1px solid #fecdd3; border-radius: 4px; padding: 6px; font-size: 11px; margin-bottom: 8px; line-height: 1.5;">
+      <div><strong>Action:</strong> <span id="popupApprovalAction" style="color: #0284c7; font-family: monospace; font-weight: bold;">CLICK &rarr; Submit</span></div>
+      <div><strong>Reason:</strong> <span id="popupApprovalReason" style="color: #4b5563;">This action submits form data.</span></div>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button id="popupBtnApprove" style="flex: 1; background: #059669; color: #ffffff; border: none; border-radius: 4px; padding: 8px; font-weight: bold; font-size: 12px; cursor: pointer;">Approve &amp; Continue</button>
+      <button id="popupBtnCancel" style="flex: 1; background: #e11d48; color: #ffffff; border: none; border-radius: 4px; padding: 8px; font-weight: bold; font-size: 12px; cursor: pointer;">Cancel</button>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- DETAILED DIAGNOSTICS SECTION (Available via "Detailed View" toggle) -->
+  <!-- ===================================================================== -->
+  <div class="detailed-section">
+    <!-- Local Reasoning & Safety Planner Panel (Preserved) -->
+    <div class="card" id="reasoningPlannerContainer" style="border: 1px solid #7c3aed; background: #fdf4ff; font-size: 12px; line-height: 1.5; color: #1e1b4b;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+        <span style="font-weight: bold; color: #6d28d9;">ON-DEVICE REASONING &amp; SAFETY</span>
+        <span id="plannerEngineBadge" style="font-size: 10px; background: #ede9fe; color: #5b21b6; border: 1px solid #c4b5fd; padding: 2px 6px; border-radius: 9999px; font-weight: 600;">DETERMINISTIC &bull; AUDITABLE</span>
+      </div>
+
+      <div><strong>Task Understanding:</strong> <span id="plannerTaskUnderstanding" style="font-style: italic; color: #4338ca;">Awaiting task input...</span></div>
+      
+      <div style="margin-top: 6px;">
+        <strong>Execution Plan:</strong>
+        <div id="plannerExecutionPlan" style="margin-top: 4px; background: #ffffff; border: 1px solid #e9d5ff; border-radius: 4px; padding: 6px; max-height: 100px; overflow-y: auto; font-family: monospace; font-size: 11px;">
+          (No task planned yet)
+        </div>
+      </div>
+
+      <div style="margin-top: 6px;">
+        <strong>Reasoning &amp; Safety Trace:</strong>
+        <div id="plannerReasoningTrace" style="margin-top: 4px; background: #ffffff; border: 1px solid #e9d5ff; border-radius: 4px; padding: 6px; max-height: 90px; overflow-y: auto; font-family: monospace; font-size: 11px; line-height: 1.4;">
+          (Trace will appear here)
+        </div>
+      </div>
+
+      <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed #c4b5fd;">
+        <div><strong>Action Risk Classification:</strong> <span id="plannerRiskBadge" style="font-weight: bold; padding: 2px 6px; border-radius: 3px; font-size: 11px; background: #e0e7ff; color: #3730a3;">LOW</span></div>
+        <div><strong>Safety Gate Decision:</strong> <span id="plannerSafetyDecision" style="font-weight: bold; color: #166534;">PASSED (Safe Action)</span></div>
+        <div><strong>Human Approval:</strong> <span id="plannerApprovalStatus" style="font-weight: bold; color: #1e1b4b;">NOT REQUIRED</span></div>
       </div>
     </div>
 
-    <!-- Section 23: Evaluation & Safety Benchmark Telemetry -->
-    <div style="margin-top: 8px; padding-top: 6px; border-top: 1px dashed #90caf9; font-size: 11px;">
+    <!-- Milestone 13: Browser Agent Status Panel (Preserved) -->
+    <div class="card" id="agentStatusContainer" style="border: 1px solid #1565c0; background: #f0f7ff; font-size: 11.5px; line-height: 1.5; color: #222;">
+      <div style="font-weight: bold; color: #0d47a1; margin-bottom: 6px;">BROWSER AGENT TELEMETRY (M13 GATEWAY)</div>
+      <!-- Explicit Architectural Pipeline Badges -->
+      <div style="display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; font-size: 9px; font-weight: bold;">
+        <span style="background: #e3f2fd; color: #0d47a1; border: 1px solid #90caf9; padding: 2px 5px; border-radius: 3px;">1. LOCAL PERCEPTION</span>
+        <span id="badgeGeminiReasoning" style="background: #e8eaf6; color: #1a237e; border: 1px solid #9fa8da; padding: 2px 5px; border-radius: 3px;">2. GEMINI REASONING</span>
+        <span style="background: #ede7f6; color: #4a148c; border: 1px solid #b39ddb; padding: 2px 5px; border-radius: 3px;">3. LOCAL GROUNDING</span>
+        <span style="background: #e8f5e9; color: #1b5e20; border: 1px solid #a5d6a7; padding: 2px 5px; border-radius: 3px;">4. LOCAL SAFETY</span>
+        <span style="background: #fbe9e7; color: #bf360c; border: 1px solid #ffab91; padding: 2px 5px; border-radius: 3px;">5. LOCAL EXECUTION</span>
+      </div>
+
+      <div><strong>Task:</strong> <span id="agentTaskText">None</span></div>
+      <div><strong>Request ID:</strong> <span id="agentRequestId" style="font-family: monospace;">-</span></div>
+      <div><strong>Local screenshot:</strong> <span id="agentScreenshotStatus">Awaiting capture</span></div>
+      <div><strong>Local privacy:</strong> <span id="agentPrivacyStatus" style="color: #2e7d32; font-weight: bold;">ACTIVE</span></div>
+      <div><strong>DOM PII detected:</strong> <span id="agentDomPiiCount">-</span></div>
+      <div><strong>OCR sensitive regions:</strong> <span id="agentOcrPiiCount">-</span></div>
+      <div><strong>Sensitive regions (Total):</strong> <span id="agentSensitiveCount">-</span></div>
+      <div><strong>Redaction:</strong> <span id="agentRedactionStatus">-</span></div>
+      <div><strong>Sanitized visual context:</strong> <span id="agentSanitizedStatus">Awaiting pipeline</span></div>
+      <div style="margin-top: 4px; margin-bottom: 4px;">
+        <strong>Raw screenshot:</strong>
+        <span id="agentRawUploadStatus" style="color: #c62828; font-weight: bold; background: #ffebee; padding: 2px 6px; border-radius: 3px; border: 1px solid #ef9a9a;">BLOCKED</span>
+      </div>
+      <div style="margin-top: 2px; margin-bottom: 4px;">
+        <strong>Sanitized context:</strong>
+        <span id="agentSanitizedUploadStatus" style="color: #2e7d32; font-weight: bold; background: #e8f5e9; padding: 2px 6px; border-radius: 3px; border: 1px solid #a5d6a7;">READY</span>
+      </div>
+      <div><strong>Sensitive data:</strong> <span id="agentSensitiveDataStatus" style="color: #2e7d32; font-weight: bold;">LOCAL ONLY</span></div>
+      <div><strong>Reasoning:</strong> <span id="agentReasoningLocation" style="color: #2e7d32; font-weight: bold;">LOCAL</span></div>
+      <div><strong>Safety decision:</strong> <span id="agentSafetyDecisionStatus" style="color: #2e7d32; font-weight: bold;">LOCAL</span></div>
+      <div><strong>Human approval:</strong> <span id="agentApprovalGateStatus" style="color: #1565c0; font-weight: bold;">ENFORCED</span></div>
+      <div><strong>Agent:</strong> <span id="agentModeStatus" style="font-weight: bold; color: #0d47a1;">DEMO MODE</span> <span id="agentModeSubtext" style="font-size: 11px; color: #555;">(Deterministic local agent; no external AI API keys)</span></div>
+      <div id="agentFallbackRow" style="display: none; margin-top: 2px; margin-bottom: 2px; background: #ffebee; border: 1px solid #ef9a9a; padding: 3px 6px; border-radius: 4px;">
+        <strong style="color: #b71c1c;">Fallback reason:</strong> <span id="agentFallbackReasonText" style="font-size: 11px; color: #b71c1c; font-weight: bold;">-</span>
+      </div>
+      <div><strong>Agent Loop:</strong> <span id="agentStepText" style="font-weight: bold; color: #1565c0;">-</span></div>
+      <div><strong>Change Verification:</strong> <span id="agentVerificationText" style="font-weight: bold; color: #333;">Awaiting action...</span></div>
+      <div><strong>Agent action:</strong> <span id="agentActionText" style="font-family: monospace; font-weight: bold;">-</span></div>
+      <div><strong>Agent reasoning:</strong> <span id="agentReasoningText" style="font-style: italic; color: #444;">-</span></div>
+      <div style="margin-top: 4px; padding-top: 4px; border-top: 1px dashed #90caf9;">
+        <div><strong>Grounding method:</strong> <span id="groundingMethodText" style="font-family: monospace;">-</span></div>
+        <div><strong>Grounding score:</strong> <span id="groundingScoreText" style="font-family: monospace;">-</span></div>
+        <div><strong>Grounded element:</strong> <span id="groundedElementText" style="font-family: monospace;">-</span></div>
+        <div><strong>FILL step status:</strong> <span id="fillStepStatus" style="font-family: monospace;">-</span></div>
+        <div style="margin-top: 3px;">
+          <strong>Field values:</strong>
+          <span id="fieldValuesPrivacyNotice" style="color: #2e7d32; font-weight: bold; background: #e8f5e9; padding: 2px 6px; border-radius: 3px; border: 1px solid #a5d6a7;">Kept local (not sent)</span>
+        </div>
+      </div>
+      <div><strong>Local safety validation:</strong> <span id="agentSafetyStatus" style="font-weight: bold;">-</span></div>
+      <div><strong>Execution result:</strong> <span id="agentExecutionStatus" style="font-weight: bold;">-</span></div>
+      <div><strong>Gateway round-trip latency:</strong> <span id="agentGatewayLatency">-</span></div>
+    </div>
+
+    <!-- Section 23: Evaluation & Safety Benchmark Telemetry (Preserved) -->
+    <div class="card" style="font-size: 11px;">
       <div style="display: flex; justify-content: space-between; align-items: center;">
         <strong style="color: #0d47a1;">Evaluation &amp; Safety Benchmark:</strong>
         <span id="evalZeroViolationBadge" style="background: #e8f5e9; color: #166534; padding: 1px 5px; border-radius: 3px; font-weight: bold; font-size: 9px; border: 1px solid #bbf7d0;">0 UNAUTHORIZED ACTIONS</span>
@@ -161,114 +828,90 @@
       </div>
     </div>
 
-    <!-- Local vs External Data Boundary Architecture Summary -->
-    <div style="margin-top: 8px; padding-top: 6px; border-top: 1px dashed #90caf9; font-size: 11px;">
-      <strong style="color: #0d47a1;">Data Boundary Architecture:</strong>
-      <table style="width: 100%; border-collapse: collapse; margin-top: 4px; font-size: 10px;">
-        <tr style="background: #e3f2fd;">
-          <th style="padding: 4px; text-align: left; border: 1px solid #bbdefb;">Local (Client-Side Only)</th>
-          <th style="padding: 4px; text-align: left; border: 1px solid #bbdefb;">External Gateway (POST /api/visual-context)</th>
-        </tr>
-        <tr>
-          <td style="padding: 4px; border: 1px solid #bbdefb; vertical-align: top;">
-            • Raw Tab Screenshot<br/>
-            • Raw OCR Text &amp; Canvas Pixels<br/>
-            • Form Values &amp; Password Fields<br/>
-            • Exact Sensitive Coordinates
-          </td>
-          <td style="padding: 4px; border: 1px solid #bbdefb; vertical-align: top;">
-            • Masked / Redacted Screenshot<br/>
-            • Redacted DOM Summary (type, label, bbox)<br/>
-            • Redaction Counts (no raw PII strings)<br/>
-            • Verified "privacyState: SANITIZED"
-          </td>
-        </tr>
-      </table>
+    <!-- Diagnostic Textareas & Outputs (Preserved) -->
+    <label for="decisionOutput" style="display: block; margin-top: 8px; font-size: 11px;"><strong>Agent Decision:</strong></label>
+    <input type="text" id="decisionOutput" readonly placeholder="Agent decision will appear here..." style="width: 100%; box-sizing: border-box; font-family: monospace; font-size: 12px; font-weight: bold; padding: 5px;" />
+
+    <label for="executionOutput" style="display: block; margin-top: 6px; font-size: 11px;"><strong>Action Execution:</strong></label>
+    <input type="text" id="executionOutput" readonly placeholder="Execution result will appear here..." style="width: 100%; box-sizing: border-box; font-family: monospace; font-size: 12px; font-weight: bold; padding: 5px;" />
+
+    <label for="output" style="display: block; margin-top: 8px; font-size: 11px;"><strong>Page Info (Title &amp; URL):</strong></label>
+    <textarea id="output" rows="3" readonly placeholder="Page title & URL will appear here..."></textarea>
+
+    <label for="sampleOutput" style="display: block; margin-top: 6px; font-size: 11px;"><strong>Redacted Page Text Sample:</strong></label>
+    <textarea id="sampleOutput" rows="4" readonly placeholder="Redacted text sample will appear here..."></textarea>
+
+    <label for="backendOutput" style="display: block; margin-top: 6px; font-size: 11px;"><strong>Backend Response:</strong></label>
+    <textarea id="backendOutput" rows="4" readonly placeholder="Backend response will appear here..."></textarea>
+
+    <!-- Detected DOM Visual Elements (Preserved) -->
+    <div id="visualContextContainer" style="border: 1px solid #ccc; padding: 8px; border-radius: 4px; background: #fafafa; margin-top: 8px;">
+      <label for="elementsOutput" style="display: block; font-size: 11px; font-weight: bold; margin-bottom: 4px; color: #333;">Detected Visual Elements (DOM):</label>
+      <textarea id="elementsOutput" rows="5" readonly placeholder="Detected visual elements will appear here..." style="width: 100%; box-sizing: border-box; font-family: monospace; font-size: 10.5px; padding: 5px;"></textarea>
     </div>
-  </div>
 
-  <label for="output" style="display: block; margin-top: 10px;"><strong>Page Info (Title &amp; URL):</strong></label>
-  <textarea id="output" rows="4" readonly placeholder="Page title & URL will appear here..."></textarea>
-
-  <label for="sampleOutput" style="display: block; margin-top: 10px;"><strong>Redacted Page Text Sample:</strong></label>
-  <textarea id="sampleOutput" rows="7" readonly placeholder="Redacted text sample will appear here..."></textarea>
-
-  <label for="backendOutput" style="display: block; margin-top: 10px;"><strong>Backend Response:</strong></label>
-  <textarea id="backendOutput" rows="4" readonly placeholder="Backend response will appear here..."></textarea>
-
-  <label for="decisionOutput" style="display: block; margin-top: 10px;"><strong>Agent Decision:</strong></label>
-  <input type="text" id="decisionOutput" readonly placeholder="Agent decision will appear here..." style="width: 100%; box-sizing: border-box; font-family: monospace; font-size: 13px; font-weight: bold; padding: 6px;" />
-
-  <label for="executionOutput" style="display: block; margin-top: 10px;"><strong>Action Execution:</strong></label>
-  <input type="text" id="executionOutput" readonly placeholder="Execution result will appear here..." style="width: 100%; box-sizing: border-box; font-family: monospace; font-size: 13px; font-weight: bold; padding: 6px;" />
-
-  <label for="visualStatus" style="display: block; margin-top: 10px;"><strong>Local Visual Context:</strong></label>
-  <div id="visualContextContainer" style="border: 1px solid #ccc; padding: 8px; border-radius: 4px; background: #fafafa;">
-    <div id="visualStatus" style="font-size: 12px; color: #555; margin-bottom: 4px;">Awaiting capture...</div>
-    <img id="screenshotPreview" src="" alt="Local Screenshot Preview" style="display: none; width: 100%; max-height: 160px; object-fit: contain; border: 1px solid #ddd; border-radius: 4px; margin-top: 4px; margin-bottom: 8px; background: #fff;" />
-
-    <label for="elementsOutput" style="display: block; font-size: 12px; font-weight: bold; margin-bottom: 4px; color: #333;">Detected Visual Elements (DOM):</label>
-    <textarea id="elementsOutput" rows="7" readonly placeholder="Detected visual elements will appear here..." style="width: 100%; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px;"></textarea>
-  </div>
-
-  <label for="visionClassificationContainer" style="display: block; margin-top: 10px;"><strong>On-Device Image Classification (SqueezeNet ONNX):</strong></label>
-  <div id="visionClassificationContainer" style="border: 1px solid #ccc; padding: 8px; border-radius: 4px; background: #fafafa;">
-    <div style="font-size: 10px; color: #666; font-style: italic; margin-bottom: 4px;">General scene/image classification. UI element grounding is performed via DOM/accessibility/geometry + local OCR.</div>
-    <div id="visionStatus" style="font-size: 12px; color: #555; margin-bottom: 4px;">Awaiting capture...</div>
-    <div id="visionDetails" style="font-size: 12px; font-family: monospace; color: #333; line-height: 1.5; display: none;">
-      <div><strong>Status:</strong> <span id="visionStatusText">Completed</span></div>
-      <div><strong>Provider:</strong> <span id="visionProvider">wasm</span></div>
-      <div><strong>Latency:</strong> <span id="visionLatency">-</span></div>
-      <div><strong>Class Index:</strong> <span id="visionClassIndex">-</span></div>
-      <div><strong>Confidence:</strong> <span id="visionConfidence">-</span></div>
-    </div>
-  </div>
-
-  <label for="visualPrivacyContainer" style="display: block; margin-top: 10px;"><strong>Local Visual Privacy (Screenshot Redaction):</strong></label>
-  <div id="visualPrivacyContainer" style="border: 1px solid #ccc; padding: 8px; border-radius: 4px; background: #fafafa;">
-    <div id="privacyStatus" style="font-size: 12px; color: #555; margin-bottom: 4px;">Awaiting capture...</div>
-    <div id="privacyDetails" style="font-size: 12px; font-family: monospace; color: #333; line-height: 1.5; display: none;">
-      <div><strong>Original screenshot:</strong> <span id="privacyOriginalStatus">CAPTURED LOCALLY</span></div>
-      <div><strong>OCR Engine:</strong> <span id="privacyOcrStatus">ON DEVICE</span></div>
-      <div><strong>DOM sensitive regions:</strong> <span id="privacyRegionCount">0</span></div>
-      <div><strong>OCR detected text regions:</strong> <span id="privacyOcrTextCount">0</span></div>
-      <div><strong>OCR sensitive regions:</strong> <span id="privacyOcrSensitiveCount">0</span></div>
-      <div><strong>Total redacted regions:</strong> <span id="privacyTotalRedactedCount">0</span></div>
-      <div><strong>Redaction:</strong> <span id="privacyRedactionStatus" style="color: #2e7d32; font-weight: bold;">ACTIVE</span></div>
-      
-      <label for="sanitizedScreenshotPreview" style="display: block; font-size: 11px; font-weight: bold; margin-top: 6px; color: #444;">Sanitized Screenshot (Client-side Masked):</label>
-      <img id="sanitizedScreenshotPreview" src="" alt="Sanitized Screenshot Preview" style="display: none; width: 100%; max-height: 160px; object-fit: contain; border: 1px solid #ddd; border-radius: 4px; margin-top: 4px; margin-bottom: 6px; background: #fff;" />
-      
-      <div style="font-size: 10px; color: #666; font-style: italic; margin-top: 4px; line-height: 1.3;">
-        Sensitive regions detected via local DOM attributes and on-device OCR text matching — not guaranteed to catch all sensitive content.
-      </div>
-      <div id="privacyTransmissionNotice" style="font-size: 11px; color: #2e7d32; font-weight: bold; margin-top: 4px; line-height: 1.3;">
-        Raw tab screenshot: NEVER transmitted (M13 gateway strictly requires sanitized/masked screenshot).
+    <!-- On-Device Image Classification (SqueezeNet ONNX) (Preserved) -->
+    <div id="visionClassificationContainer" style="border: 1px solid #ccc; padding: 8px; border-radius: 4px; background: #fafafa; margin-top: 8px;">
+      <strong style="font-size: 11px;">On-Device Image Classification (SqueezeNet ONNX):</strong>
+      <div style="font-size: 10px; color: #666; font-style: italic; margin-bottom: 4px;">General scene/image classification. UI element grounding is performed via DOM/accessibility/geometry + local OCR.</div>
+      <div id="visionStatus" style="font-size: 11px; color: #555; margin-bottom: 4px;">Awaiting capture...</div>
+      <div id="visionDetails" style="font-size: 11px; font-family: monospace; color: #333; line-height: 1.4; display: none;">
+        <div><strong>Status:</strong> <span id="visionStatusText">Completed</span></div>
+        <div><strong>Provider:</strong> <span id="visionProvider">wasm</span></div>
+        <div><strong>Latency:</strong> <span id="visionLatency">-</span></div>
+        <div><strong>Class Index:</strong> <span id="visionClassIndex">-</span></div>
+        <div><strong>Confidence:</strong> <span id="visionConfidence">-</span></div>
       </div>
     </div>
-  </div>
 
-  <label for="fusionContainer" style="display: block; margin-top: 10px;"><strong>Local Perception Fusion &amp; Timing:</strong></label>
-  <div id="fusionContainer" style="border: 1px solid #ccc; padding: 8px; border-radius: 4px; background: #fafafa;">
-    <div id="fusionStatus" style="font-size: 12px; color: #555; margin-bottom: 4px;">Awaiting pipeline...</div>
-    <div id="fusionDetails" style="font-size: 12px; font-family: monospace; color: #333; line-height: 1.5; display: none;">
-      <div><strong>Fused Elements:</strong> <span id="fusionElementCount">-</span></div>
-      <div><strong>Vision Class:</strong> <span id="fusionVisionClass">-</span></div>
-      <div><strong>Sensitive Regions (Total):</strong> <span id="fusionSensitiveCount">-</span></div>
-      <div style="margin-top: 6px; padding-top: 4px; border-top: 1px solid #ddd;">
-        <div><strong>Pipeline Latency:</strong></div>
-        <div style="font-size: 11px; color: #555; margin-left: 6px;">
-          <div>DOM Extraction: <span id="timingDom">-</span></div>
-          <div>Screenshot Capture: <span id="timingScreenshot">-</span></div>
-          <div>Vision Inference (SqueezeNet): <span id="timingVision">-</span></div>
-          <div>Sensitive Detection (DOM): <span id="timingSensitive">-</span></div>
-          <div>OCR Initialization: <span id="timingOcrInit">-</span></div>
-          <div>OCR Inference: <span id="timingOcrInference">-</span></div>
-          <div>OCR Sensitive Detection: <span id="timingOcrDetection">-</span></div>
-          <div>Region Merging: <span id="timingMerge">-</span></div>
-          <div>Canvas Redaction: <span id="timingRedaction">-</span></div>
-          <div>Perception Fusion: <span id="timingFusion">-</span></div>
-          <div>Gateway Round-Trip: <span id="timingGateway">-</span></div>
+    <!-- Local Visual Privacy (Screenshot Redaction) (Preserved) -->
+    <div id="visualPrivacyContainer" style="border: 1px solid #ccc; padding: 8px; border-radius: 4px; background: #fafafa; margin-top: 8px;">
+      <strong style="font-size: 11px;">Local Visual Privacy (Screenshot Redaction):</strong>
+      <div id="privacyStatus" style="font-size: 11px; color: #555; margin-bottom: 4px;">Awaiting capture...</div>
+      <div id="privacyDetails" style="font-size: 11px; font-family: monospace; color: #333; line-height: 1.4; display: none;">
+        <div><strong>Original screenshot:</strong> <span id="privacyOriginalStatus">CAPTURED LOCALLY</span></div>
+        <div><strong>OCR Engine:</strong> <span id="privacyOcrStatus">ON DEVICE</span></div>
+        <div><strong>DOM sensitive regions:</strong> <span id="privacyRegionCount">0</span></div>
+        <div><strong>OCR detected text regions:</strong> <span id="privacyOcrTextCount">0</span></div>
+        <div><strong>OCR sensitive regions:</strong> <span id="privacyOcrSensitiveCount">0</span></div>
+        <div><strong>Total redacted regions:</strong> <span id="privacyTotalRedactedCount">0</span></div>
+        <div><strong>Redaction:</strong> <span id="privacyRedactionStatus" style="color: #2e7d32; font-weight: bold;">ACTIVE</span></div>
+        
+        <label for="sanitizedScreenshotPreview" style="display: block; font-size: 11px; font-weight: bold; margin-top: 6px; color: #444;">Sanitized Screenshot (Client-side Masked):</label>
+        <img id="sanitizedScreenshotPreview" src="" alt="Sanitized Screenshot Preview" style="display: none; width: 100%; max-height: 140px; object-fit: contain; border: 1px solid #ddd; border-radius: 4px; margin-top: 4px; margin-bottom: 6px; background: #fff;" />
+        
+        <div style="font-size: 9.5px; color: #666; font-style: italic; margin-top: 4px; line-height: 1.3;">
+          Sensitive regions detected via local DOM attributes and on-device OCR text matching — not guaranteed to catch all sensitive content.
+        </div>
+        <div id="privacyTransmissionNotice" style="font-size: 10.5px; color: #2e7d32; font-weight: bold; margin-top: 4px; line-height: 1.3;">
+          Raw tab screenshot: NEVER transmitted (M13 gateway strictly requires sanitized/masked screenshot).
+        </div>
+      </div>
+    </div>
+
+    <!-- Local Perception Fusion & Timing (Preserved) -->
+    <div id="fusionContainer" style="border: 1px solid #ccc; padding: 8px; border-radius: 4px; background: #fafafa; margin-top: 8px; margin-bottom: 12px;">
+      <strong style="font-size: 11px;">Local Perception Fusion &amp; Timing:</strong>
+      <div id="fusionStatus" style="font-size: 11px; color: #555; margin-bottom: 4px;">Awaiting pipeline...</div>
+      <div id="fusionDetails" style="font-size: 11px; font-family: monospace; color: #333; line-height: 1.4; display: none;">
+        <div><strong>Fused Elements:</strong> <span id="fusionElementCount">-</span></div>
+        <div><strong>Vision Class:</strong> <span id="fusionVisionClass">-</span></div>
+        <div><strong>Sensitive Regions (Total):</strong> <span id="fusionSensitiveCount">-</span></div>
+        <div style="margin-top: 4px; padding-top: 4px; border-top: 1px solid #ddd;">
+          <div><strong>Pipeline Latency:</strong></div>
+          <div style="font-size: 10px; color: #555; margin-left: 6px;">
+            <div>DOM Extraction: <span id="timingDom">-</span></div>
+            <div>Screenshot Capture: <span id="timingScreenshot">-</span></div>
+            <div>Vision Inference (SqueezeNet): <span id="timingVision">-</span></div>
+            <div>Sensitive Detection (DOM): <span id="timingSensitive">-</span></div>
+            <div>OCR Initialization: <span id="timingOcrInit">-</span></div>
+            <div>OCR Inference: <span id="timingOcrInference">-</span></div>
+            <div>OCR Sensitive Detection: <span id="timingOcrDetection">-</span></div>
+            <div>Region Merging: <span id="timingMerge">-</span></div>
+            <div>Canvas Redaction: <span id="timingRedaction">-</span></div>
+            <div>Perception Fusion: <span id="timingFusion">-</span></div>
+            <div>Gateway Round-Trip: <span id="timingGateway">-</span></div>
+          </div>
         </div>
       </div>
     </div>

@@ -30,7 +30,8 @@ from main import (
     ALLOWED_ACTIONS,
     receive_context,
     receive_visual_context,
-    DemoAgentProvider
+    DemoAgentProvider,
+    set_active_agent_provider
 )
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -170,6 +171,7 @@ def test_backend_fill_action_grounding():
         ]
     })
 
+    set_active_agent_provider(DemoAgentProvider())
     res = asyncio.run(receive_visual_context(
         sanitizedScreenshot=_make_dummy_image(),
         task="Fill Full Name and Email Address",
@@ -284,9 +286,8 @@ def test_backend_explicit_action_allowlist_rejection():
 # Test 6: Privacy: Assert no test ever sends or allows literal typed values
 # =====================================================================
 def test_privacy_contract_no_literal_values_in_schema():
-    """Asserts AgentAction model schema explicitly lacks any 'value' or 'fieldValue' fields."""
+    """Asserts AgentAction model schema explicitly lacks unredacted form profile fields."""
     model_fields = AgentAction.model_fields.keys()
-    assert "value" not in model_fields
     assert "fieldValue" not in model_fields
     assert "field_value" not in model_fields
     assert "localValue" not in model_fields

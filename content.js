@@ -92,8 +92,8 @@ function executeAction(actionPayload) {
 
   const { action, target, amount } = actionPayload;
 
-  // Explicit action allowlist check: exactly {"CLICK", "SCROLL", "FILL", "FILL_FORM", "AUTOFILL"} permitted
-  const ALLOWED_ACTIONS = new Set(["CLICK", "SCROLL", "FILL", "FILL_FORM", "AUTOFILL"]);
+  // Explicit action allowlist check: exactly {"CLICK", "SCROLL", "FILL", "FILL_FORM", "AUTOFILL", "SUBMIT"} permitted
+  const ALLOWED_ACTIONS = new Set(["CLICK", "SCROLL", "FILL", "FILL_FORM", "AUTOFILL", "SUBMIT"]);
   if (!ALLOWED_ACTIONS.has(action)) {
     return {
       executed: false,
@@ -540,7 +540,150 @@ function executeAction(actionPayload) {
     }
   }
 
-  // 4. Unknown / unsupported action type
+  // 4. SUBMIT Action Execution (Milestone 13 Cross-Website Robustness Patch)
+  // Section 4 Submission Priority:
+  // 1. associated form submission if safely available
+  // 2. existing search/submit button
+  // 3. keyboard Enter if current execution system safely supports it
+  if (action === "SUBMIT") {
+    const freshElements = extractVisualElementsWithNodes();
+    let targetInput = null;
+
+    // A. If targetIndex specified and points to a live node
+    if (typeof actionPayload.targetIndex === "number" && freshElements[actionPayload.targetIndex]) {
+      const cand = freshElements[actionPayload.targetIndex];
+      if (cand.node && cand.node.isConnected) {
+        targetInput = cand.node;
+      }
+    }
+
+    // B. If document.activeElement is an input/textarea
+    if (!targetInput && document.activeElement && ["input", "textarea"].includes((document.activeElement.tagName || "").toLowerCase())) {
+      targetInput = document.activeElement;
+    }
+
+    // C. Search DOM for the primary search input
+    if (!targetInput) {
+      for (const item of freshElements) {
+        if (!item || !item.node || !item.node.isConnected) continue;
+        const n = item.node;
+        const tag = (n.tagName || "").toLowerCase();
+        if (tag !== "input" && tag !== "textarea") continue;
+        const lNorm = normalizeLabel(item.label || n.placeholder || n.name || n.id || "");
+        if (lNorm.includes("search") || lNorm.includes("query") || n.type === "search" || item.semanticTag === "SEARCH_INPUT") {
+          targetInput = n;
+          break;
+        }
+      }
+    }
+
+    // Fallback: any visible text input on page
+    if (!targetInput) {
+      for (const item of freshElements) {
+        if (!item || !item.node || !item.node.isConnected) continue;
+        const n = item.node;
+        if ((n.tagName || "").toLowerCase() === "input" && ["text", "search", ""].includes((n.type || "").toLowerCase()) && !n.disabled && !n.readOnly) {
+          targetInput = n;
+          break;
+        }
+      }
+    }
+
+    let submissionMethod = "none";
+    let submitted = false;
+
+    // Strategy 1: Associated form submission if safely available
+    if (targetInput) {
+      const form = targetInput.form || (typeof targetInput.closest === "function" ? targetInput.closest("form") : null);
+      if (form) {
+        try {
+          if (typeof form.requestSubmit === "function") {
+            form.requestSubmit();
+            submissionMethod = "form.requestSubmit";
+            submitted = true;
+          } else if (typeof form.submit === "function") {
+            form.submit();
+            submissionMethod = "form.submit";
+            submitted = true;
+          }
+        } catch (formErr) {
+          console.warn("[SIH26171] form.requestSubmit notice:", formErr);
+        }
+      }
+    }
+
+    // Strategy 2: Existing search/submit button
+    if (!submitted) {
+      let submitBtn = null;
+      if (targetInput) {
+        const form = targetInput.form || (typeof targetInput.closest === "function" ? targetInput.closest("form") : null);
+        if (form) {
+          submitBtn = form.querySelector("button[type='submit'], input[type='submit'], button");
+        }
+      }
+      if (!submitBtn) {
+        for (const item of freshElements) {
+          if (!item || !item.node || !item.node.isConnected) continue;
+          const n = item.node;
+          if (n.disabled || n.getAttribute?.("aria-disabled") === "true") continue;
+          const lNorm = normalizeLabel(item.label || n.value || n.getAttribute?.("aria-label") || "");
+          if (item.type === "button" && (lNorm.includes("search") || lNorm.includes("submit") || item.semanticTag === "SUBMIT_BUTTON")) {
+            submitBtn = n;
+            break;
+          }
+        }
+      }
+
+      if (submitBtn) {
+        try {
+          submitBtn.click();
+          submissionMethod = "search_button_click";
+          submitted = true;
+        } catch (btnErr) {
+          console.warn("[SIH26171] submit button click notice:", btnErr);
+        }
+      }
+    }
+
+    // Strategy 3: Keyboard Enter if current execution system safely supports it
+    // Dispatch Enter on the search input to ensure SPA / dynamic handlers activate
+    if (targetInput) {
+      try {
+        targetInput.focus?.();
+        const enterOpts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+        targetInput.dispatchEvent(new KeyboardEvent("keydown", enterOpts));
+        targetInput.dispatchEvent(new KeyboardEvent("keypress", enterOpts));
+        targetInput.dispatchEvent(new KeyboardEvent("keyup", enterOpts));
+        if (!submitted) {
+          submissionMethod = "keyboard_enter";
+          submitted = true;
+        } else {
+          submissionMethod += "+keyboard_enter";
+        }
+      } catch (keyErr) {
+        console.warn("[SIH26171] keyboard Enter dispatch notice:", keyErr);
+      }
+    }
+
+    if (submitted) {
+      return {
+        executed: true,
+        action: "SUBMIT",
+        target: actionPayload.target || "search",
+        targetType: "input",
+        targetLabel: targetInput ? (targetInput.name || targetInput.id || "search input") : "search",
+        submissionMethod: submissionMethod,
+        verified: true
+      };
+    }
+
+    return {
+      executed: false,
+      reason: "No form, submit button, or input found to submit search."
+    };
+  }
+
+  // 5. Unknown / unsupported action type
   return {
     executed: false,
     reason: "Unsupported or unknown action/target"
@@ -852,6 +995,15 @@ function extractFormFieldLabel(el, type) {
  * @returns {Object|null} Element descriptor or null if hidden
  */
 function classifyVisualElement(el, fieldId = null) {
+  if (!el) return null;
+  // Milestone 18: Isolate agent overlay elements from visual perception
+  if (el.closest && (el.closest("#sih-agent-overlay-root") || el.closest("[id^='sih-agent-overlay']"))) {
+    return null;
+  }
+  if (el.id && el.id.startsWith("sih-agent-overlay")) {
+    return null;
+  }
+
   // 1. Check layout presence and visibility
   const rect = getVisibleRect(el);
   if (!rect) {
@@ -1043,6 +1195,13 @@ function extractVisualElementsWithNodes() {
 const SENSITIVE_KEYWORDS = ["card", "credit", "cvv", "ssn", "phone", "password", "email"];
 
 function isSensitiveElement(el) {
+  if (!el || !el.tagName) {
+    return false;
+  }
+  // Milestone 18: Isolate agent overlay elements from sensitive detection
+  if (el.closest && (el.closest("#sih-agent-overlay-root") || el.closest("[id^='sih-agent-overlay']"))) {
+    return false;
+  }
   const tagName = el.tagName.toLowerCase();
   if (tagName !== "input" && tagName !== "textarea") {
     return false;
@@ -1304,6 +1463,272 @@ function showInPageApprovalModal(actionDetails, callback) {
   document.body.appendChild(overlay);
 }
 
+// =====================================================================
+// Milestone 18: Live Explainable Agent Overlay (HUD Telemetry)
+// Lightweight in-page bounding box & explainability card for live page demo
+// =====================================================================
+let currentOverlayData = null;
+let currentOverlayTargetNode = null;
+let overlayScrollListener = null;
+
+function clearAgentOverlay() {
+  const existing = document.getElementById("sih-agent-overlay-root");
+  if (existing) {
+    existing.remove();
+  }
+  currentOverlayData = null;
+  currentOverlayTargetNode = null;
+  if (overlayScrollListener) {
+    window.removeEventListener("scroll", overlayScrollListener, true);
+    window.removeEventListener("resize", overlayScrollListener, true);
+    overlayScrollListener = null;
+  }
+}
+
+function findOverlayTargetNode(data) {
+  if (!data) return null;
+
+  // 1. If targetIndex is provided, search freshElements
+  if (typeof data.targetIndex === "number") {
+    const freshElements = extractVisualElementsWithNodes();
+    if (freshElements[data.targetIndex] && freshElements[data.targetIndex].node && freshElements[data.targetIndex].node.isConnected) {
+      if (!data.targetLabel || labelsMatch(freshElements[data.targetIndex].label, data.targetLabel)) {
+        return freshElements[data.targetIndex].node;
+      }
+    }
+    // Search candidates by label match
+    if (data.targetLabel) {
+      const match = freshElements.find(el => el.node && el.node.isConnected && labelsMatch(el.label, data.targetLabel));
+      if (match) return match.node;
+    }
+  }
+
+  // 2. Search by targetLabel in freshElements
+  if (data.targetLabel) {
+    const freshElements = extractVisualElementsWithNodes();
+    const match = freshElements.find(el => el.node && el.node.isConnected && labelsMatch(el.label, data.targetLabel));
+    if (match) return match.node;
+  }
+
+  // 3. Search by ACTION_TARGET_MAP if target is a known string key
+  if (data.target && ACTION_TARGET_MAP[data.target]) {
+    const el = document.querySelector(ACTION_TARGET_MAP[data.target]);
+    if (el) return el;
+  }
+
+  // 4. Fallback search by standard queries for search inputs / submit buttons
+  if (data.action === "SUBMIT" || data.target === "search") {
+    const searchEl = document.querySelector("input[type='search'], input[name*='search'], input[name*='q'], input[id*='search'], textarea[name*='q']");
+    if (searchEl) return searchEl;
+  }
+
+  return null;
+}
+
+function getOverlayTargetRect(targetNode, fallbackBbox) {
+  if (targetNode && targetNode.isConnected) {
+    const r = targetNode.getBoundingClientRect();
+    if (r && (r.width > 0 || r.height > 0)) {
+      const scrollX = window.scrollX || window.pageXOffset || 0;
+      const scrollY = window.scrollY || window.pageYOffset || 0;
+      return {
+        top: r.top + scrollY,
+        left: r.left + scrollX,
+        width: r.width,
+        height: r.height,
+        viewportTop: r.top,
+        viewportLeft: r.left
+      };
+    }
+  }
+
+  if (fallbackBbox && typeof fallbackBbox.x === "number") {
+    const scrollX = window.scrollX || window.pageXOffset || 0;
+    const scrollY = window.scrollY || window.pageYOffset || 0;
+    return {
+      top: fallbackBbox.y + scrollY,
+      left: fallbackBbox.x + scrollX,
+      width: fallbackBbox.width || 100,
+      height: fallbackBbox.height || 36,
+      viewportTop: fallbackBbox.y,
+      viewportLeft: fallbackBbox.x
+    };
+  }
+
+  return null;
+}
+
+function renderOverlayUI(data, rect) {
+  if (!rect || typeof document === "undefined" || !document.body) return;
+
+  let root = document.getElementById("sih-agent-overlay-root");
+  if (!root) {
+    root = document.createElement("div");
+    root.id = "sih-agent-overlay-root";
+    root.setAttribute("data-sih-overlay", "true");
+    root.setAttribute("aria-hidden", "true");
+    Object.assign(root.style, {
+      position: "absolute",
+      top: "0",
+      left: "0",
+      width: "100%",
+      height: "100%",
+      pointerEvents: "none",
+      zIndex: "2147483646",
+      overflow: "visible"
+    });
+    document.body.appendChild(root);
+  }
+
+  let box = document.getElementById("sih-agent-overlay-box");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "sih-agent-overlay-box";
+    Object.assign(box.style, {
+      position: "absolute",
+      pointerEvents: "none",
+      borderRadius: "6px",
+      transition: "border 0.2s ease, box-shadow 0.2s ease, top 0.15s ease, left 0.15s ease, width 0.15s ease, height 0.15s ease",
+      boxSizing: "border-box"
+    });
+    root.appendChild(box);
+  }
+
+  let card = document.getElementById("sih-agent-overlay-card");
+  if (!card) {
+    card = document.createElement("div");
+    card.id = "sih-agent-overlay-card";
+    Object.assign(card.style, {
+      position: "absolute",
+      pointerEvents: "none",
+      zIndex: "2147483646",
+      borderRadius: "8px",
+      padding: "8px 12px",
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+      fontSize: "12px",
+      lineHeight: "1.4",
+      color: "#f8fafc",
+      maxWidth: "340px",
+      minWidth: "200px",
+      boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.6), 0 0 15px rgba(0, 0, 0, 0.3)",
+      backdropFilter: "blur(10px)",
+      WebkitBackdropFilter: "blur(10px)",
+      transition: "background-color 0.2s ease, border-color 0.2s ease, top 0.15s ease, left 0.15s ease",
+      boxSizing: "border-box"
+    });
+    root.appendChild(card);
+  }
+
+  const state = data.state || "GROUNDED";
+  let borderColor = "#6366f1";
+  let boxShadow = "0 0 12px rgba(99, 102, 241, 0.5), inset 0 0 6px rgba(99, 102, 241, 0.2)";
+  let badgeHtml = "";
+  let contentHtml = "";
+
+  if (state === "EXECUTING") {
+    borderColor = "#f59e0b";
+    boxShadow = "0 0 16px rgba(245, 158, 11, 0.6), inset 0 0 8px rgba(245, 158, 11, 0.25)";
+    badgeHtml = `<div style="font-size: 10px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: #fbbf24; background: rgba(245, 158, 11, 0.2); border: 1px solid rgba(245, 158, 11, 0.4); padding: 2px 6px; border-radius: 4px; display: inline-block; margin-bottom: 6px;">EXECUTING &#x26A1;</div>`;
+    contentHtml = `
+      <div><span style="color:#94a3b8; font-weight: 600;">Action: </span><span style="color:#ffffff; font-weight: 700;">${escapeHtml(data.action || "CLICK")}</span></div>
+      <div><span style="color:#94a3b8; font-weight: 600;">Target: </span><span style="color:#e2e8f0;">${escapeHtml(data.targetLabel || data.target || "element")}</span></div>
+    `;
+  } else if (state === "VERIFIED") {
+    borderColor = "#10b981";
+    boxShadow = "0 0 16px rgba(16, 185, 129, 0.6), inset 0 0 8px rgba(16, 185, 129, 0.25)";
+    badgeHtml = `<div style="font-size: 10px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: #34d399; background: rgba(16, 185, 129, 0.2); border: 1px solid rgba(16, 185, 129, 0.4); padding: 2px 6px; border-radius: 4px; display: inline-block; margin-bottom: 6px;">&#x2713; VERIFIED</div>`;
+    contentHtml = `
+      <div><span style="color:#94a3b8; font-weight: 600;">Action: </span><span style="color:#ffffff; font-weight: 700;">${escapeHtml(data.action || "CLICK")}</span></div>
+      <div><span style="color:#94a3b8; font-weight: 600;">Target: </span><span style="color:#e2e8f0;">${escapeHtml(data.targetLabel || data.target || "element")}</span></div>
+    `;
+  } else if (state === "SAFETY_BLOCKED") {
+    borderColor = "#ef4444";
+    boxShadow = "0 0 16px rgba(239, 68, 68, 0.6), inset 0 0 8px rgba(239, 68, 68, 0.25)";
+    badgeHtml = `<div style="font-size: 10px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: #f87171; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.4); padding: 2px 6px; border-radius: 4px; display: inline-block; margin-bottom: 6px;">&#x1F6E1; SAFETY BLOCKED</div>`;
+    contentHtml = `
+      <div><span style="color:#94a3b8; font-weight: 600;">Reason: </span><span style="color:#fca5a5; font-weight: 600;">${escapeHtml(data.reason || "Action blocked by safety policy")}</span></div>
+      ${data.action ? `<div><span style="color:#94a3b8; font-weight: 600;">Action: </span><span style="color:#e2e8f0;">${escapeHtml(data.action)}</span></div>` : ""}
+    `;
+  } else {
+    // GROUNDED ("AGENT TARGET")
+    borderColor = "#6366f1";
+    boxShadow = "0 0 12px rgba(99, 102, 241, 0.5), inset 0 0 6px rgba(99, 102, 241, 0.2)";
+    badgeHtml = `<div style="font-size: 10px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: #818cf8; background: rgba(99, 102, 241, 0.18); border: 1px solid rgba(99, 102, 241, 0.35); padding: 2px 6px; border-radius: 4px; display: inline-block; margin-bottom: 6px;">AGENT TARGET</div>`;
+    const confVal = data.confidence !== undefined ? (typeof data.confidence === "number" ? data.confidence.toFixed(2) : String(data.confidence)) : "1.00";
+    contentHtml = `
+      <div><span style="color:#94a3b8; font-weight: 600;">Action: </span><span style="color:#ffffff; font-weight: 700;">${escapeHtml(data.action || "CLICK")}</span></div>
+      <div><span style="color:#94a3b8; font-weight: 600;">Target: </span><span style="color:#e2e8f0;">${escapeHtml(data.targetLabel || data.target || "element")}</span></div>
+      <div><span style="color:#94a3b8; font-weight: 600;">Confidence: </span><span style="color:#38bdf8; font-weight: 600;">${escapeHtml(confVal)}</span></div>
+      <div><span style="color:#94a3b8; font-weight: 600;">Method: </span><span style="color:#a78bfa;">${escapeHtml(data.method || "local-fuzzy-match")}</span></div>
+    `;
+  }
+
+  // Update box styles
+  box.style.top = `${rect.top}px`;
+  box.style.left = `${rect.left}px`;
+  box.style.width = `${Math.max(rect.width, 24)}px`;
+  box.style.height = `${Math.max(rect.height, 24)}px`;
+  box.style.border = `2px solid ${borderColor}`;
+  box.style.boxShadow = boxShadow;
+
+  // Update card styles and contents
+  card.style.backgroundColor = "rgba(15, 23, 42, 0.94)";
+  card.style.border = `1px solid ${borderColor}`;
+  card.innerHTML = `${badgeHtml}${contentHtml}`;
+
+  // Position card near box (above if space allows, otherwise below)
+  const cardEstimatedHeight = (state === "GROUNDED") ? 110 : 80;
+  const fitsAbove = rect.viewportTop > (cardEstimatedHeight + 16);
+
+  let cardTop = fitsAbove ? (rect.top - cardEstimatedHeight - 8) : (rect.top + rect.height + 8);
+  let cardLeft = rect.left;
+
+  const maxLeft = (window.scrollX || 0) + (window.innerWidth || (document.documentElement ? document.documentElement.clientWidth : 800)) - 350;
+  if (cardLeft > maxLeft) {
+    cardLeft = Math.max(8, maxLeft);
+  }
+
+  card.style.top = `${cardTop}px`;
+  card.style.left = `${Math.max(8, cardLeft)}px`;
+}
+
+function showAgentOverlay(payload) {
+  currentOverlayData = payload || {};
+  currentOverlayTargetNode = findOverlayTargetNode(currentOverlayData);
+  const rect = getOverlayTargetRect(currentOverlayTargetNode, currentOverlayData.bbox);
+  if (rect) {
+    renderOverlayUI(currentOverlayData, rect);
+  }
+
+  if (!overlayScrollListener && typeof window !== "undefined") {
+    overlayScrollListener = () => {
+      if (currentOverlayData) {
+        const r = getOverlayTargetRect(currentOverlayTargetNode, currentOverlayData.bbox);
+        if (r) {
+          renderOverlayUI(currentOverlayData, r);
+        }
+      }
+    };
+    window.addEventListener("scroll", overlayScrollListener, { passive: true, capture: true });
+    window.addEventListener("resize", overlayScrollListener, { passive: true });
+  }
+}
+
+function updateAgentOverlay(payload) {
+  if (!currentOverlayData && !payload) return;
+  currentOverlayData = {
+    ...(currentOverlayData || {}),
+    ...(payload || {})
+  };
+  if (!currentOverlayTargetNode) {
+    currentOverlayTargetNode = findOverlayTargetNode(currentOverlayData);
+  }
+  const rect = getOverlayTargetRect(currentOverlayTargetNode, currentOverlayData.bbox);
+  if (rect) {
+    renderOverlayUI(currentOverlayData, rect);
+  }
+}
+
 // Listen for messages sent from the popup
 if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -1328,7 +1753,17 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
       const sensitiveRegions = extractSensitiveRegions();
       const sensitiveDetectionMs = Math.round(performance.now() - tSensStart);
 
-      // 6. Send the sanitized data back to popup (never expose raw text, passwords, or input values)
+      // 6. Local search results state detection (Milestone 13 Cross-Website Robustness)
+      const urlLower = url.toLowerCase();
+      const titleLower = title.toLowerCase();
+      const hasSearchUrl = urlLower.includes("/search") || urlLower.includes("?q=") || urlLower.includes("&q=") || urlLower.includes("query=") || urlLower.includes("search?");
+      const hasSearchTitle = titleLower.includes("search") || titleLower.includes("results") || titleLower.includes(" - google") || titleLower.includes("at duckduckgo") || titleLower.includes("search results");
+      const resultContainers = document.querySelectorAll(
+        "#search, #rso, #links, .results, .search-results, [role='main'] a, .mw-search-results, .b_results"
+      );
+      const isSearchResults = !!(hasSearchUrl || (hasSearchTitle && resultContainers && resultContainers.length > 0));
+
+      // 7. Send the sanitized data back to popup (never expose raw text, passwords, or input values)
       sendResponse({
         success: true,
         title,
@@ -1336,7 +1771,30 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
         redactedSample,
         visualElements,
         sensitiveRegions,
-        sensitiveDetectionMs
+        sensitiveDetectionMs,
+        isSearchResults,
+        searchSignals: {
+          hasSearchUrl,
+          hasSearchTitle,
+          containerCount: resultContainers ? resultContainers.length : 0
+        }
+      });
+      return false;
+    } else if (request.action === "checkSearchResultsState") {
+      const url = (window.location.href || "").toLowerCase();
+      const title = (document.title || "").toLowerCase();
+      const hasSearchUrl = url.includes("/search") || url.includes("?q=") || url.includes("&q=") || url.includes("query=") || url.includes("search?");
+      const hasSearchTitle = title.includes("search") || title.includes("results") || title.includes(" - google") || title.includes("at duckduckgo") || title.includes("search results");
+      const resultContainers = document.querySelectorAll(
+        "#search, #rso, #links, .results, .search-results, [role='main'] a, .mw-search-results, .b_results"
+      );
+      const isSearchResults = !!(hasSearchUrl || (hasSearchTitle && resultContainers && resultContainers.length > 0));
+      sendResponse({
+        success: true,
+        isSearchResults,
+        hasSearchUrl,
+        hasSearchTitle,
+        containerCount: resultContainers ? resultContainers.length : 0
       });
       return false;
     } else if (request.action === "executeAction") {
@@ -1356,6 +1814,19 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
     } else if (request.action === "dismissHumanApproval") {
       removeInPageApprovalModal();
       sendResponse({ dismissed: true });
+      return false;
+    } else if (request.action === "showAgentOverlay") {
+      // Milestone 18: Live Explainable Agent Overlay
+      showAgentOverlay(request.payload || {});
+      sendResponse({ success: true });
+      return false;
+    } else if (request.action === "updateAgentOverlay") {
+      updateAgentOverlay(request.payload || {});
+      sendResponse({ success: true });
+      return false;
+    } else if (request.action === "clearAgentOverlay") {
+      clearAgentOverlay();
+      sendResponse({ success: true });
       return false;
     }
 
@@ -1377,6 +1848,9 @@ if (typeof module !== "undefined" && module.exports) {
     normalizeLabel,
     labelsMatch,
     showInPageApprovalModal,
-    removeInPageApprovalModal
+    removeInPageApprovalModal,
+    showAgentOverlay,
+    updateAgentOverlay,
+    clearAgentOverlay
   };
 }

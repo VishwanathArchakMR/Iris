@@ -1,0 +1,70 @@
+{
+  "manifest_version": 3,
+  "name": "SIH26171 - Visual Perception Agent",
+  "version": "1.0.0",
+  "description": "On-device Visual Perception Agent Prototype (Milestone 9).",
+
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "tabs"
+  ],
+
+  "host_permissions": [
+    "http://localhost:8000/*",
+    "<all_urls>"
+  ],
+
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Visual Perception Agent"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["form-profile.js", "pii-detector.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "lib/vision.bundle.js",
+        "lib/onnx-runtime.js",
+        "lib/ort-wasm-simd-threaded.wasm",
+        "lib/ort-wasm-simd-threaded.mjs",
+        "lib/ort-wasm-simd-threaded.jsep.wasm",
+        "lib/ort-wasm-simd-threaded.jsep.mjs",
+        "squeezenet1.1-7.onnx",
+        "lib/ocr.bundle.js",
+        "lib/ocr/worker.min.js",
+        "lib/ocr/eng.traineddata",
+        "lib/ocr/eng.traineddata.gz",
+        "lib/ocr/tesseract-core-lstm.wasm.js",
+        "lib/ocr/tesseract-core-lstm.wasm",
+        "lib/ocr/tesseract-core-simd-lstm.wasm.js",
+        "lib/ocr/tesseract-core-simd-lstm.wasm",
+        "lib/ocr/tesseract-core.wasm.js",
+        "lib/ocr/tesseract-core.wasm",
+        "lib/ocr/*",
+        "form-profile.js",
+        "form-profile.json",
+        "change-detector.js",
+        "reasoning-planner.js",
+        "task-parser.js",
+        "evaluation-tracker.js"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
