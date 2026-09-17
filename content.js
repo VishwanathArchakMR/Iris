@@ -396,16 +396,17 @@ function executeAction(actionPayload) {
 
   // 2b. FILL_FORM Action Execution (Simultaneous Whole-Form Autofill using Local Profile)
   if (action === "FILL_FORM" || action === "AUTOFILL") {
+    // Standard local fallback profile for testing (replaces personal data)
     const profile = actionPayload.profile || (typeof window !== "undefined" && window.SIHFormProfile ? window.SIHFormProfile.getFormProfile() : null) || {
-      fullName: "Sanketh Mallikarjuna",
-      name: "Sanketh Mallikarjuna",
-      email: "sanketh@example.com",
-      phone: "+1-555-0199",
-      organization: "SIH Visual Perception Labs",
-      address: "123 Innovation Way, Tech Park",
-      city: "Bengaluru",
-      state: "Karnataka",
-      zip: "560001",
+      fullName: "Test User",
+      name: "Test User",
+      email: "test@example.com",
+      phone: "+1-555-0100",
+      organization: "Test Organization",
+      address: "123 Test Street",
+      city: "Test City",
+      state: "Test State",
+      zip: "000000",
       comments: "Automated visual perception agent verification test."
     };
 

@@ -26,6 +26,11 @@ document.addEventListener("DOMContentLoaded", () => {
   const visionLatency = document.getElementById("visionLatency");
   const visionClassIndex = document.getElementById("visionClassIndex");
   const visionConfidence = document.getElementById("visionConfidence");
+  const visionModelStatus = document.getElementById("visionModelStatus");
+  const visionRuntime = document.getElementById("visionRuntime");
+  const visionDetectionsCount = document.getElementById("visionDetectionsCount");
+  const visionFusionStatus = document.getElementById("visionFusionStatus");
+  const visionPageChangeStatus = document.getElementById("visionPageChangeStatus");
 
   // Milestone 11 & 12 DOM elements for Local Visual Privacy (Screenshot Redaction + OCR)
   const privacyStatus = document.getElementById("privacyStatus");
@@ -404,6 +409,8 @@ document.addEventListener("DOMContentLoaded", () => {
   let latestOcrWordCount = 0;
   let latestMergedRegions = null;
   let latestVisionResult = null;
+  let latestFusedElements = null;
+  let lastScreenSignature = null;
   let latestSanitizedDataUrl = null;
   let latestPageData = null;
   let ocrCompleted = false;
@@ -511,6 +518,16 @@ document.addEventListener("DOMContentLoaded", () => {
     if (timingGateway) timingGateway.textContent = timing.gatewayMs !== null ? `${timing.gatewayMs} ms` : "-";
 
     // Update fusion summary counts
+    if (fused && Array.isArray(fused.fusedElements)) {
+      latestFusedElements = fused.fusedElements;
+    } else {
+      latestFusedElements = latestVisualElements;
+    }
+
+    if (visionFusionStatus) {
+      visionFusionStatus.textContent = (latestFusedElements && latestFusedElements.some(e => e.isVisualConfirmed)) ? "ACTIVE" : "DOM ACTIVE";
+    }
+
     if (fusionElementCount) {
       fusionElementCount.textContent = latestVisualElements ? latestVisualElements.length : "-";
     }
@@ -703,7 +720,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const triggerVisionClassification = async (dataUrl) => {
     if (!visionStatus) return;
 
-    visionStatus.textContent = "Classifying image with on-device vision model (SqueezeNet)...";
+    visionStatus.textContent = "Running on-device visual perception (ONNX Runtime Web)...";
     visionStatus.style.color = "#1565c0";
     if (visionDetails) visionDetails.style.display = "none";
 
@@ -721,13 +738,21 @@ document.addEventListener("DOMContentLoaded", () => {
       timing.visionInferenceMs = latencyMs;
       latestVisionResult = result;
 
-      visionStatus.textContent = "Vision classification completed (on-device)";
+      visionStatus.textContent = "Vision inference completed (on-device)";
       visionStatus.style.color = "#2e7d32";
 
+      if (visionModelStatus) {
+        visionModelStatus.textContent = "READY";
+        visionModelStatus.style.background = "#e0f2fe";
+        visionModelStatus.style.color = "#0369a1";
+      }
+      if (visionRuntime) visionRuntime.textContent = "ONNX Runtime Web";
       if (visionStatusText) visionStatusText.textContent = "Completed";
-      if (visionProvider) visionProvider.textContent = result.executionProvider || "wasm";
+      if (visionProvider) visionProvider.textContent = `LOCAL (${result.executionProvider || "wasm"})`;
       if (visionLatency) visionLatency.textContent = `${latencyMs} ms`;
       if (visionClassIndex) visionClassIndex.textContent = result.classIndex;
+      if (visionDetectionsCount) visionDetectionsCount.textContent = result.detections ? result.detections.length : 0;
+      if (visionFusionStatus) visionFusionStatus.textContent = "ACTIVE";
       if (visionConfidence) {
         let confVal = typeof result.confidence === "number" ? result.confidence : parseFloat(result.confidence);
         if (isNaN(confVal)) confVal = 0.0;
@@ -737,10 +762,22 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       if (visionDetails) visionDetails.style.display = "block";
     } catch (err) {
-      console.error("Local vision classification error:", err);
-      visionStatus.textContent = `Vision classification failed: ${err.message || err}`;
-      visionStatus.style.color = "#c62828";
-      if (visionDetails) visionDetails.style.display = "none";
+      console.warn("[SIH26171][VISION] Local vision inference notice:", err.message || err);
+      console.log("[SIH26171][VISION] Falling back to DOM perception");
+      visionStatus.textContent = `Vision notice: ${err.message || err} (DOM perception fallback active)`;
+      visionStatus.style.color = "#d97706";
+      
+      if (visionModelStatus) {
+        visionModelStatus.textContent = "UNAVAILABLE — DOM FALLBACK";
+        visionModelStatus.style.background = "#fef3c7";
+        visionModelStatus.style.color = "#b45309";
+      }
+      if (visionStatusText) visionStatusText.textContent = "DOM Fallback";
+      if (visionProvider) visionProvider.textContent = "DOM Perception (Local)";
+      if (visionLatency) visionLatency.textContent = "-";
+      if (visionDetectionsCount) visionDetectionsCount.textContent = "0";
+      if (visionFusionStatus) visionFusionStatus.textContent = "DOM FALLBACK";
+      if (visionDetails) visionDetails.style.display = "block";
       latestVisionResult = null;
     }
 
@@ -897,6 +934,27 @@ document.addEventListener("DOMContentLoaded", () => {
       };
       tempImg.src = response.dataUrl;
 
+      // Milestone 9 & 14: Evaluate page change state using perceptual screen signature
+      if (window.SIHChangeDetector && typeof window.SIHChangeDetector.computeScreenSignature === "function") {
+        window.SIHChangeDetector.computeScreenSignature(response.dataUrl, latestVisualElements || []).then((screenSig) => {
+          const changeResult = window.SIHChangeDetector.compareScreenSignatures(lastScreenSignature, screenSig);
+          lastScreenSignature = screenSig;
+          if (visionPageChangeStatus) {
+            visionPageChangeStatus.textContent = changeResult.changed ? "CHANGED" : "STABLE";
+            visionPageChangeStatus.style.color = changeResult.changed ? "#b45309" : "#1e40af";
+          }
+          if (window.SIHFusion && typeof window.SIHFusion.updatePerceptionState === "function") {
+            window.SIHFusion.updatePerceptionState({
+              pageSignature: screenSig.domSignature,
+              visualSignature: screenSig.pixelHash,
+              changed: changeResult.changed,
+              reason: changeResult.reason
+            });
+          }
+          console.log(`[SIH26171][VISION] Page change evaluation: ${changeResult.changeLevel} — ${changeResult.reason}`);
+        }).catch((err) => console.warn("[SIH26171][VISION] Change detection notice:", err));
+      }
+
       // Milestone 12: Trigger OCR pipeline on screenshot
       triggerOcrPipeline(response.dataUrl);
 
@@ -917,6 +975,10 @@ document.addEventListener("DOMContentLoaded", () => {
     latestOcrWordCount = 0;
     latestMergedRegions = null;
     latestVisionResult = null;
+    latestFusedElements = null;
+    if (window.SIHFusion && typeof window.SIHFusion.invalidatePerception === "function") {
+      window.SIHFusion.invalidatePerception("Pipeline state reset for new pass");
+    }
     latestSanitizedDataUrl = null;
     latestPageData = null;
     ocrCompleted = false;
@@ -1986,12 +2048,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
                 let bestIdx = -1;
                 let bestScore = 0;
-                (latestVisualElements || []).forEach((el, idx) => {
+                const fillCandidates = latestFusedElements || latestVisualElements || [];
+                fillCandidates.forEach((el, idx) => {
                   if (!FORM_TYPES.has((el.type || "").toLowerCase())) return;
                   const labelNorm = normalize(el.label);
                   let score = 0;
                   if (labelNorm === targetHintNorm) score = 1.0;
                   else if (labelNorm.includes(targetHintNorm) || targetHintNorm.includes(labelNorm)) score = 0.8;
+                  if (score > 0 && el.isVisualConfirmed) {
+                    score = Math.min(1.0, score + 0.10);
+                  }
                   if (score > bestScore) {
                     bestScore = score;
                     bestIdx = idx;
@@ -1999,15 +2065,15 @@ document.addEventListener("DOMContentLoaded", () => {
                 });
 
                 if (bestIdx >= 0 && bestScore >= 0.35) {
-                  const matchedEl = latestVisualElements[bestIdx];
+                  const matchedEl = fillCandidates[bestIdx];
                   agentAction = {
                     action: "FILL",
-                    targetIndex: bestIdx,
+                    targetIndex: matchedEl.index !== undefined ? matchedEl.index : bestIdx,
                     targetType: matchedEl.type,
                     targetLabel: matchedEl.label,
                     value: authoritativeVal || currentStepPlan.value || (data.action?.value) || "",
                     groundingScore: bestScore,
-                    groundingMethod: "local-fuzzy-match"
+                    groundingMethod: matchedEl.isVisualConfirmed ? "dom+visual-fusion" : "local-fuzzy-match"
                   };
                 } else {
                   // Section 5 Bounded Recovery: Live DOM re-perception before falling back
@@ -2165,8 +2231,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
                 let bestIdx = -1;
                 let bestScore = 0;
-                (latestVisualElements || []).forEach((el, idx) => {
-                  const s = computeClickScore(el);
+                const clickCandidates = latestFusedElements || latestVisualElements || [];
+                clickCandidates.forEach((el, idx) => {
+                  let s = computeClickScore(el);
+                  if (s > 0 && el.isVisualConfirmed) {
+                    s = Math.min(1.0, s + 0.10);
+                  }
                   if (s > bestScore) {
                     bestScore = s;
                     bestIdx = idx;
@@ -2174,15 +2244,15 @@ document.addEventListener("DOMContentLoaded", () => {
                 });
 
                 if (bestIdx >= 0 && bestScore >= 0.35) {
-                  const matchedEl = latestVisualElements[bestIdx];
+                  const matchedEl = clickCandidates[bestIdx];
                   agentAction = {
                     action: "CLICK",
                     target: matchedEl.label,
-                    targetIndex: bestIdx,
+                    targetIndex: matchedEl.index !== undefined ? matchedEl.index : bestIdx,
                     targetType: matchedEl.type,
                     targetLabel: matchedEl.label,
                     groundingScore: bestScore,
-                    groundingMethod: "local-fuzzy-match"
+                    groundingMethod: matchedEl.isVisualConfirmed ? "dom+visual-fusion" : "local-fuzzy-match"
                   };
                 } else {
                   // Section 5 Bounded Recovery: Live DOM re-perception before falling back

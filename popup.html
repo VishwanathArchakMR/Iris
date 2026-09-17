@@ -850,17 +850,25 @@
       <textarea id="elementsOutput" rows="5" readonly placeholder="Detected visual elements will appear here..." style="width: 100%; box-sizing: border-box; font-family: monospace; font-size: 10.5px; padding: 5px;"></textarea>
     </div>
 
-    <!-- On-Device Image Classification (SqueezeNet ONNX) (Preserved) -->
+    <!-- On-Device Image Classification (SqueezeNet ONNX) (Milestone 9) -->
     <div id="visionClassificationContainer" style="border: 1px solid #ccc; padding: 8px; border-radius: 4px; background: #fafafa; margin-top: 8px;">
-      <strong style="font-size: 11px;">On-Device Image Classification (SqueezeNet ONNX):</strong>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+        <strong style="font-size: 11px;">On-Device Image Classification (SqueezeNet ONNX):</strong>
+        <span id="visionModelStatus" style="font-size: 9.5px; font-weight: bold; padding: 1px 6px; border-radius: 3px; background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd;">READY</span>
+      </div>
       <div style="font-size: 10px; color: #666; font-style: italic; margin-bottom: 4px;">General scene/image classification. UI element grounding is performed via DOM/accessibility/geometry + local OCR.</div>
       <div id="visionStatus" style="font-size: 11px; color: #555; margin-bottom: 4px;">Awaiting capture...</div>
       <div id="visionDetails" style="font-size: 11px; font-family: monospace; color: #333; line-height: 1.4; display: none;">
         <div><strong>Status:</strong> <span id="visionStatusText">Completed</span></div>
-        <div><strong>Provider:</strong> <span id="visionProvider">wasm</span></div>
-        <div><strong>Latency:</strong> <span id="visionLatency">-</span></div>
-        <div><strong>Class Index:</strong> <span id="visionClassIndex">-</span></div>
-        <div><strong>Confidence:</strong> <span id="visionConfidence">-</span></div>
+        <div><strong>Runtime:</strong> <span id="visionRuntime">ONNX Runtime Web</span></div>
+        <div><strong>Execution:</strong> <span id="visionProvider">LOCAL (wasm)</span></div>
+        <div><strong>Last Inference:</strong> <span id="visionLatency">-</span></div>
+        <div><strong>Detections:</strong> <span id="visionDetectionsCount">-</span></div>
+        <div><strong>DOM + Vision Fusion:</strong> <span id="visionFusionStatus" style="color: #166534; font-weight: bold;">ACTIVE</span></div>
+        <div><strong>Page Change:</strong> <span id="visionPageChangeStatus" style="color: #1e40af;">STABLE</span></div>
+        <div style="margin-top: 2px; padding-top: 2px; border-top: 1px dashed #e2e8f0; font-size: 10px; color: #64748b;">
+          Class Index: <span id="visionClassIndex">-</span> | Confidence: <span id="visionConfidence">-</span>
+        </div>
       </div>
     </div>
 
