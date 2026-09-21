@@ -107,8 +107,10 @@ class PageContext(BaseModel):
     url: str
     redactedSample: str
 
-# Schema for structured agent decision (supports optional amount for SCROLL and grounded target metadata)
-# For FILL actions: 'target'/'targetLabel' identifies which input element to fill, while 'value' holds the exact user query text.
+class PlanTaskRequest(BaseModel):
+    task: str
+
+# Schema for structured agent decision (supports optional amount for SCROLL, batched actions, and ReAct thought)
 class AgentAction(BaseModel):
     action: str
     target: Optional[str] = None
@@ -124,6 +126,10 @@ class AgentAction(BaseModel):
     fieldHint: Optional[str] = None
     valueKey: Optional[str] = None
     ambiguity: Optional[str] = None
+    observation: Optional[str] = None
+    current_plan_step: Optional[str] = None
+    thought: Optional[str] = None
+    actions: Optional[List[Dict[str, Any]]] = None
 
     @field_validator("action")
     @classmethod
@@ -165,7 +171,7 @@ async def receive_context(context: PageContext):
     print(f"  URL            : {context.url}")
     print("  Redacted Sample:")
     print("-" * 60)
-    print(context.redactedSample)
+    print(str(context.redactedSample).encode("ascii", "replace").decode("ascii"))
 
     # Compute rule-based decision
     action = decide_action(context)
@@ -758,9 +764,18 @@ PRODUCT SELECTION RULES:
   3. Ground the selected result to the actual locally perceived DOM element for that product.
   4. If no confident actual product match exists, return action="NONE" with ambiguity="AMBIGUOUS" rather than selecting an accessory.
 
+REACT (REASON + ACT) & ACTION BATCHING RULES:
+1. First, summarize what you see on the screen in "observation".
+2. Note which step of the plan you are addressing in "current_plan_step".
+3. Write your internal monologue in "thought" explaining your decision before taking action.
+4. ACTION BATCHING FOR SPEED: If multiple non-conflicting actions can be performed immediately on the current page state without waiting for a new page load (e.g. clicking an input field, typing text, and clicking search/submit), return them in the "actions" array in sequential order.
+
 OUTPUT FORMAT:
 Output strictly valid JSON matching this schema:
 {
+  "observation": "I am currently on...",
+  "current_plan_step": "e.g. 3. Type 'kgf song' into search bar",
+  "thought": "Internal monologue explaining reasoning...",
   "action": "CLICK" | "FILL" | "FILL_FORM" | "SUBMIT" | "SCROLL" | "NONE",
   "target": "target element label or null",
   "targetRole": "button | link | input | textarea | select | etc., or null",
@@ -772,7 +787,15 @@ Output strictly valid JSON matching this schema:
   "confidence": float 0.0 to 1.0,
   "reasoning": "short explanation of the decision",
   "ambiguity": "NONE" | "AMBIGUOUS" | "UNSUPPORTED",
-  "requiresApproval": boolean (true for submit, delete, purchase, confirm, or destructive/consequential actions)
+  "requiresApproval": boolean (true for submit, delete, purchase, confirm, or destructive/consequential actions),
+  "actions": [
+    {
+      "action": "CLICK" | "FILL" | "SUBMIT" | "SCROLL",
+      "target": "target element label",
+      "targetIndex": integer,
+      "value": "string or null"
+    }
+  ]
 }
 
 SECURITY & PRIVACY RULES:
@@ -782,6 +805,81 @@ SECURITY & PRIVACY RULES:
 4. If multiple elements match with similar likelihood, set ambiguity="AMBIGUOUS" and action="NONE".
 5. If confidence is low (< 0.35) or no element matches, set action="NONE".
 """
+
+PLANNER_SYSTEM_INSTRUCTION = """You are the Master Planner for a browser automation agent. The user will give you a high-level, vague goal. Break this goal down into a strict, logical sequence of atomic browser actions.
+If the user says "play kgf song", your output MUST be:
+[
+  "1. Locate the search bar",
+  "2. Type 'kgf song' into the search bar",
+  "3. Click the search button",
+  "4. Click the first video result"
+]
+Return ONLY a valid JSON array of strings representing the steps. Do not include markdown formatting or conversational text."""
+
+def generate_execution_plan(vague_prompt: str, api_key: str = "", model_name: str = "gemini-3.6-flash") -> List[str]:
+    """Expands a vague high-level user prompt into a structured, executable checklist."""
+    vague_prompt = (vague_prompt or "").strip()
+    if not vague_prompt:
+        return ["1. Observe page state", "2. Execute requested action"]
+
+    active_key = api_key or os.getenv("GEMINI_API_KEY", "").strip()
+    active_model = model_name or os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip()
+
+    if HAS_GENAI_SDK and active_key:
+        try:
+            client = genai.Client(api_key=active_key)
+            resp = client.models.generate_content(
+                model=active_model,
+                contents=f"High-level user goal: {vague_prompt}",
+                config=types.GenerateContentConfig(
+                    system_instruction=PLANNER_SYSTEM_INSTRUCTION,
+                    response_mime_type="application/json"
+                )
+            )
+            if resp and resp.text:
+                cleaned = resp.text.strip()
+                if cleaned.startswith("```"):
+                    cleaned = re.sub(r"^```(?:json)?\n?", "", cleaned)
+                    cleaned = re.sub(r"\n?```$", "", cleaned).strip()
+                parsed = json.loads(cleaned)
+                if isinstance(parsed, list) and len(parsed) > 0 and all(isinstance(x, str) for x in parsed):
+                    return parsed
+        except Exception as e:
+            print(f"[ZERO-SHOT PLANNER ERROR] {e}. Falling back to deterministic planner.")
+
+    # Intelligent Deterministic Decomposition Fallback
+    vp_lower = vague_prompt.lower()
+    if "play" in vp_lower or "song" in vp_lower or "youtube" in vp_lower or "video" in vp_lower:
+        query = re.sub(r"^(?:play|watch|find|search for)\s+", "", vague_prompt, flags=re.I).strip()
+        query = re.sub(r"\s+(?:on\s+youtube|video|song)$", "", query, flags=re.I).strip() or "video"
+        return [
+            f"1. Locate the search bar",
+            f"2. Type '{query}' into the search bar",
+            f"3. Click the search button",
+            f"4. Click the first video result",
+            f"5. Verify video playback is active"
+        ]
+    elif "fill" in vp_lower and "form" in vp_lower:
+        return [
+            "1. Locate all interactive form fields",
+            "2. Autofill form fields simultaneously from local profile",
+            "3. Verify all inputs are populated",
+            "4. Review and await user approval before submit"
+        ]
+    elif "search" in vp_lower or "find" in vp_lower or "buy" in vp_lower:
+        query = re.sub(r"^(?:search(?:\s+for)?|find|buy|look for)\s+", "", vague_prompt, flags=re.I).strip() or "products"
+        return [
+            f"1. Locate search input",
+            f"2. Type '{query}' into search box",
+            f"3. Submit search",
+            f"4. Select the most relevant product result"
+        ]
+    else:
+        return [
+            f"1. Locate target for: {vague_prompt}",
+            f"2. Execute action for: {vague_prompt}",
+            f"3. Verify page state change"
+        ]
 
 class GeminiAgentProvider:
     """
@@ -1129,7 +1227,14 @@ class GeminiAgentProvider:
 
                     action_res["value"] = val
 
-                # Attach fieldPlan if present for tests
+                # ReAct Context & Action Batching metadata
+                if parsed.get("observation"):
+                    action_res["observation"] = str(parsed.get("observation"))
+                if parsed.get("current_plan_step"):
+                    action_res["current_plan_step"] = str(parsed.get("current_plan_step"))
+                action_res["thought"] = str(parsed.get("thought") or parsed.get("reasoning") or reasoning)
+                if parsed.get("actions") and isinstance(parsed.get("actions"), list):
+                    action_res["actions"] = parsed.get("actions")
                 field_plan = context.get("fieldPlan") or []
                 if field_plan and isinstance(field_plan, list):
                     all_plan_actions = []
@@ -1306,6 +1411,20 @@ async def check_gemini_connectivity():
         else:
             err_desc = f"{err_type}: {err_msg[:80]}"
         return {"status": "GEMINI_ERROR", "error": err_desc, "model": model_name}
+
+@app.post("/api/plan-task")
+async def plan_task_endpoint(req: PlanTaskRequest):
+    """
+    Task 1: Zero-Shot Task Planner endpoint.
+    Expands a vague high-level user prompt into a structured, executable checklist.
+    """
+    plan = generate_execution_plan(req.task)
+    return {
+        "status": "success",
+        "task": req.task,
+        "plan": plan,
+        "stepCount": len(plan)
+    }
 
 @app.post("/api/visual-context")
 async def receive_visual_context(

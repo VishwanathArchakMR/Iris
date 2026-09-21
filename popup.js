@@ -174,6 +174,11 @@ document.addEventListener("DOMContentLoaded", () => {
   const packetOutboundPayload = document.getElementById("packetOutboundPayload");
   const packetInspectionAuditStatus = document.getElementById("packetInspectionAuditStatus");
 
+  // ReAct Task Planner & Live Chain-of-Thought
+  const reactLiveThoughtText = document.getElementById("reactLiveThoughtText");
+  const reactActivePlanChecklist = document.getElementById("reactActivePlanChecklist");
+  const reactPlanStepCountBadge = document.getElementById("reactPlanStepCountBadge");
+
   // Toggle Demonstration Mode vs Detailed Diagnostics View
   if (viewModeToggleBtn) {
     viewModeToggleBtn.addEventListener("click", () => {
@@ -389,18 +394,21 @@ document.addEventListener("DOMContentLoaded", () => {
         if (voiceRecognition) {
           voiceRecognition.onstart = () => {
             isRecordingVoice = true;
-            voiceCommandBtn.classList.add("recording");
+            if (voiceCommandBtn) voiceCommandBtn.classList.add("recording");
             if (voiceStatusIndicator) voiceStatusIndicator.style.display = "inline-flex";
           };
           voiceRecognition.onend = () => {
             isRecordingVoice = false;
-            voiceCommandBtn.classList.remove("recording");
+            if (voiceCommandBtn) voiceCommandBtn.classList.remove("recording");
             if (voiceStatusIndicator) voiceStatusIndicator.style.display = "none";
           };
           voiceRecognition.onerror = (e) => {
-            console.warn("[SIH26171] Voice recognition error:", e);
+            const errType = (e && e.error) ? e.error : "speech-event";
+            if (errType !== "no-speech" && errType !== "aborted") {
+              console.log("[SIH26171] Voice recognition status:", errType);
+            }
             isRecordingVoice = false;
-            voiceCommandBtn.classList.remove("recording");
+            if (voiceCommandBtn) voiceCommandBtn.classList.remove("recording");
             if (voiceStatusIndicator) voiceStatusIndicator.style.display = "none";
           };
         }
@@ -477,6 +485,87 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
   }
+
+  /**
+   * Task 1: Fetch Zero-Shot High-Level Execution Plan from Backend
+   */
+  const fetchZeroShotPlan = async (userPrompt) => {
+    try {
+      const res = await fetch("http://localhost:8000/api/plan-task", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task: userPrompt })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.plan) && data.plan.length > 0) {
+          return data.plan;
+        }
+      }
+    } catch (e) {
+      console.warn("[ZERO-SHOT PLANNER] Network call failed, using local planner:", e);
+    }
+    // Fallback: Local deterministic planner
+    if (window.SIHReasoningPlanner && typeof window.SIHReasoningPlanner.planTask === "function") {
+      let parsed = window.SIHTaskParser ? window.SIHTaskParser.parseTask(userPrompt) : null;
+      let localPlan = window.SIHReasoningPlanner.planTask(parsed, { title: document.title, url: window.location.href });
+      if (localPlan && Array.isArray(localPlan.steps) && localPlan.steps.length > 0) {
+        return localPlan.steps.map((st, i) => `${i + 1}. ${st.type} -> ${st.target || st.fieldHint || "target"}`);
+      }
+    }
+    return [
+      `1. Locate interactive target for: ${userPrompt}`,
+      `2. Execute action for: ${userPrompt}`,
+      `3. Verify final page state`
+    ];
+  };
+
+  /**
+   * Task 4: Render Active Plan Checklist with Live Progress
+   */
+  let currentActivePlan = [];
+  const renderActivePlanChecklist = (planSteps, currentStepIdx = 0) => {
+    currentActivePlan = planSteps || [];
+    if (!reactActivePlanChecklist) return;
+    if (reactPlanStepCountBadge) {
+      reactPlanStepCountBadge.textContent = `${currentActivePlan.length} Steps Planned`;
+    }
+    if (!currentActivePlan || currentActivePlan.length === 0) {
+      reactActivePlanChecklist.innerHTML = '<div style="color:#94a3b8;font-style:italic;">No active plan yet.</div>';
+      return;
+    }
+
+    reactActivePlanChecklist.innerHTML = currentActivePlan.map((stepText, idx) => {
+      let icon = "⏳";
+      let color = "#64748b";
+      let weight = "normal";
+      let bg = "transparent";
+
+      if (idx < currentStepIdx) {
+        icon = "✓";
+        color = "#16a34a";
+        weight = "600";
+      } else if (idx === currentStepIdx) {
+        icon = "➔";
+        color = "#4f46e5";
+        weight = "700";
+        bg = "#e0e7ff";
+      }
+
+      return `<div style="padding: 2px 4px; border-radius: 4px; background: ${bg}; color: ${color}; font-weight: ${weight}; margin-bottom: 2px; display: flex; align-items: center; gap: 4px;">
+        <span>${icon}</span>
+        <span>${escapeHtml(stepText)}</span>
+      </div>`;
+    }).join("");
+  };
+
+  /**
+   * Task 4: Render Live Agent Thought (Internal Monologue)
+   */
+  const setLiveAgentThought = (thoughtText) => {
+    if (!reactLiveThoughtText) return;
+    reactLiveThoughtText.textContent = thoughtText ? `"${thoughtText}"` : "Evaluating perceived screen state...";
+  };
 
   // Milestone 18: Live Explainable Agent Overlay Telemetry Helper
   const sendOverlayTelemetry = (tabId, message) => {
@@ -1714,9 +1803,14 @@ document.addEventListener("DOMContentLoaded", () => {
           popupApprovalContainer.style.display = "none";
         }
 
+        // Fetch Zero-Shot Plan and populate interactive checklist UI
+        const zeroShotPlan = await fetchZeroShotPlan(task);
+        renderActivePlanChecklist(zeroShotPlan, 0);
+        setLiveAgentThought(`Analyzing user intent: "${task}" and initializing visual perception...`);
+
         let isPlannedTask = parsedTask && parsedTask.intent !== "NONE" && Array.isArray(parsedTask.steps) && parsedTask.steps.length > 0;
         let plannedSteps = isPlannedTask ? parsedTask.steps : null;
-        let totalPlannedSteps = isPlannedTask ? Math.min(plannedSteps.length, MAX_AGENT_STEPS) : 1;
+        let totalPlannedSteps = isPlannedTask ? Math.min(plannedSteps.length, MAX_AGENT_STEPS) : Math.max(zeroShotPlan.length, 1);
         let localValuesMap = (isPlannedTask && parsedTask.localValues) ? parsedTask.localValues : {};
 
         // AGENT SESSION ISOLATION (Milestone 17 Production Hardening):
@@ -2106,6 +2200,11 @@ document.addEventListener("DOMContentLoaded", () => {
           if (agentGatewayLatency) agentGatewayLatency.textContent = `${latencyMs} ms`;
           if (timingGateway) timingGateway.textContent = `${latencyMs} ms`;
 
+          // Live ReAct Thought Display
+          const currentThought = (data && data.action && (data.action.thought || data.action.reasoning)) || data.reasoning || "";
+          setLiveAgentThought(currentThought);
+          renderActivePlanChecklist(zeroShotPlan, currentStep - 1);
+
           if (agentSanitizedUploadStatus) {
             agentSanitizedUploadStatus.textContent = "ALLOWED (Delivered to Gateway)";
             agentSanitizedUploadStatus.style.color = "#2e7d32";
@@ -2249,7 +2348,10 @@ document.addEventListener("DOMContentLoaded", () => {
                   // Section 5 Bounded Recovery: Live DOM re-perception before falling back
                   const recoveryPage = await new Promise((r) => {
                     setTimeout(() => {
-                      chrome.tabs.sendMessage(activeTab.id, { action: "getPageInfo" }, (resp) => r(resp || null));
+                      chrome.tabs.sendMessage(activeTab.id, { action: "getPageInfo" }, (resp) => {
+                        const _lastErr = chrome.runtime.lastError;
+                        r(resp || null);
+                      });
                     }, 250);
                   });
                   if (recoveryPage && Array.isArray(recoveryPage.visualElements)) {
@@ -2428,7 +2530,10 @@ document.addEventListener("DOMContentLoaded", () => {
                   // Section 5 Bounded Recovery: Live DOM re-perception before falling back
                   const recoveryPage = await new Promise((r) => {
                     setTimeout(() => {
-                      chrome.tabs.sendMessage(activeTab.id, { action: "getPageInfo" }, (resp) => r(resp || null));
+                      chrome.tabs.sendMessage(activeTab.id, { action: "getPageInfo" }, (resp) => {
+                        const _lastErr = chrome.runtime.lastError;
+                        r(resp || null);
+                      });
                     }, 250);
                   });
                   if (recoveryPage && Array.isArray(recoveryPage.visualElements)) {

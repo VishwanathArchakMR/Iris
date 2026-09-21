@@ -235,13 +235,29 @@ function executeAction(actionPayload) {
 
   const { action, target, amount } = actionPayload;
 
-  // Explicit action allowlist check: exactly {"CLICK", "SCROLL", "FILL", "FILL_FORM", "AUTOFILL", "SUBMIT"} permitted
-  const ALLOWED_ACTIONS = new Set(["CLICK", "SCROLL", "FILL", "FILL_FORM", "AUTOFILL", "SUBMIT"]);
+  // Explicit action allowlist check: {"CLICK", "SCROLL", "FILL", "FILL_FORM", "AUTOFILL", "SUBMIT", "NAVIGATE"} permitted
+  const ALLOWED_ACTIONS = new Set(["CLICK", "SCROLL", "FILL", "FILL_FORM", "AUTOFILL", "SUBMIT", "NAVIGATE"]);
   if (!ALLOWED_ACTIONS.has(action)) {
     return {
       executed: false,
       reason: "Unsupported or unknown action/target"
     };
+  }
+
+  // NAVIGATE Action Execution
+  if (action === "NAVIGATE") {
+    const navUrl = actionPayload.value || actionPayload.target || "";
+    if (navUrl && (navUrl.startsWith("http://") || navUrl.startsWith("https://") || navUrl.startsWith("/"))) {
+      try {
+        if (typeof window !== "undefined") {
+          window.location.href = navUrl;
+        }
+        return { executed: true, action: "NAVIGATE", target: navUrl, verified: true };
+      } catch (e) {
+        return { executed: false, reason: `Navigation failed: ${e.message}` };
+      }
+    }
+    return { executed: false, reason: "Invalid navigation URL" };
   }
 
   // 1. CLICK Action Execution (Milestone 5, 14 & 15 Generalized Grounding)
@@ -2126,6 +2142,31 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
     } else if (request.action === "dismissHumanApproval") {
       removeInPageApprovalModal();
       sendResponse({ dismissed: true });
+      return false;
+    } else if (request.action === "checkPlaybackState") {
+      // Fast local video playback verification
+      const video = document.querySelector("video");
+      const isPlaying = !!(video && !video.paused && !video.ended && video.readyState > 2);
+      const currentTime = video ? video.currentTime : 0;
+      sendResponse({
+        success: true,
+        hasVideo: !!video,
+        isPlaying,
+        currentTime
+      });
+      return false;
+    } else if (request.action === "executeActionBatch") {
+      // Action batching: execute multiple non-conflicting actions
+      const batch = Array.isArray(request.payload) ? request.payload : [request.payload];
+      const results = [];
+      for (const item of batch) {
+        results.push(executeAction(item));
+      }
+      sendResponse({
+        success: true,
+        results,
+        executed: results.every(r => r.executed)
+      });
       return false;
     } else if (request.action === "showAgentOverlay") {
       // Milestone 18: Live Explainable Agent Overlay
