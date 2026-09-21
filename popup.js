@@ -159,6 +159,21 @@ document.addEventListener("DOMContentLoaded", () => {
   const perceptionCanvasOverlay = document.getElementById("perceptionCanvasOverlay");
   const traceStepCount = document.getElementById("traceStepCount");
 
+  // Task 4: Hands-Free Voice Command
+  const voiceCommandBtn = document.getElementById("voiceCommandBtn");
+  const voiceStatusIndicator = document.getElementById("voiceStatusIndicator");
+
+  // Task 5: Security Telemetry / Packet Inspection Panel
+  const packetInspectionCard = document.getElementById("packetInspectionCard");
+  const packetInspectionHeader = document.getElementById("packetInspectionHeader");
+  const togglePacketInspectionBtn = document.getElementById("togglePacketInspectionBtn");
+  const packetInspectionContent = document.getElementById("packetInspectionContent");
+  const packetLocalCount = document.getElementById("packetLocalCount");
+  const packetLocalElementsList = document.getElementById("packetLocalElementsList");
+  const packetPayloadSize = document.getElementById("packetPayloadSize");
+  const packetOutboundPayload = document.getElementById("packetOutboundPayload");
+  const packetInspectionAuditStatus = document.getElementById("packetInspectionAuditStatus");
+
   // Toggle Demonstration Mode vs Detailed Diagnostics View
   if (viewModeToggleBtn) {
     viewModeToggleBtn.addEventListener("click", () => {
@@ -316,6 +331,151 @@ document.addEventListener("DOMContentLoaded", () => {
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
+  }
+
+  /**
+   * Task 4: Web Speech API Speech Recognition Initialization
+   */
+  function initSpeechRecognition(onResultCallback) {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      console.warn("Web Speech API not supported in this Chromium build.");
+      return null;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onresult = (event) => {
+      const transcript = Array.from(event.results)
+        .map(result => result[0].transcript)
+        .join('');
+      const isFinal = Boolean(event.results[0] && event.results[0].isFinal);
+      onResultCallback(transcript, isFinal);
+    };
+
+    return recognition;
+  }
+
+  // Voice Command Event Wiring
+  let voiceRecognition = null;
+  let isRecordingVoice = false;
+
+  if (voiceCommandBtn) {
+    voiceCommandBtn.addEventListener("click", () => {
+      if (isRecordingVoice && voiceRecognition) {
+        voiceRecognition.stop();
+        return;
+      }
+
+      if (!voiceRecognition) {
+        voiceRecognition = initSpeechRecognition((transcript, isFinal) => {
+          if (taskInput) {
+            taskInput.value = transcript;
+          }
+          if (isFinal) {
+            if (voiceStatusIndicator) voiceStatusIndicator.style.display = "none";
+            voiceCommandBtn.classList.remove("recording");
+            isRecordingVoice = false;
+            // Automatically submit task on final speech result
+            if (runAgentTaskBtn) {
+              runAgentTaskBtn.click();
+            }
+          }
+        });
+
+        if (voiceRecognition) {
+          voiceRecognition.onstart = () => {
+            isRecordingVoice = true;
+            voiceCommandBtn.classList.add("recording");
+            if (voiceStatusIndicator) voiceStatusIndicator.style.display = "inline-flex";
+          };
+          voiceRecognition.onend = () => {
+            isRecordingVoice = false;
+            voiceCommandBtn.classList.remove("recording");
+            if (voiceStatusIndicator) voiceStatusIndicator.style.display = "none";
+          };
+          voiceRecognition.onerror = (e) => {
+            console.warn("[SIH26171] Voice recognition error:", e);
+            isRecordingVoice = false;
+            voiceCommandBtn.classList.remove("recording");
+            if (voiceStatusIndicator) voiceStatusIndicator.style.display = "none";
+          };
+        }
+      }
+
+      if (voiceRecognition) {
+        try {
+          voiceRecognition.start();
+        } catch (err) {
+          console.warn("[SIH26171] Failed to start voice recognition:", err);
+        }
+      } else {
+        alert("Web Speech API is not supported in this browser or extension context.");
+      }
+    });
+  }
+
+  /**
+   * Task 5: Live Security Telemetry / Packet Inspection View
+   */
+  const togglePacketInspection = () => {
+    if (!packetInspectionContent) return;
+    const isHidden = packetInspectionContent.style.display === "none" || !packetInspectionContent.style.display;
+    packetInspectionContent.style.display = isHidden ? "block" : "none";
+    if (togglePacketInspectionBtn) {
+      togglePacketInspectionBtn.textContent = isHidden ? "Hide" : "Show";
+    }
+  };
+
+  if (togglePacketInspectionBtn) {
+    togglePacketInspectionBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      togglePacketInspection();
+    });
+  }
+  if (packetInspectionHeader) {
+    packetInspectionHeader.addEventListener("click", () => {
+      togglePacketInspection();
+    });
+  }
+
+  function updatePacketInspectionTelemetry(localElements, outboundPayload) {
+    if (packetLocalCount) {
+      packetLocalCount.textContent = `${(localElements || []).length} elements`;
+    }
+    if (packetLocalElementsList) {
+      if (localElements && localElements.length > 0) {
+        packetLocalElementsList.innerHTML = localElements.slice(0, 15).map((el, i) => {
+          const type = (el.type || el.tagName || "ELEMENT").toUpperCase();
+          const label = el.label || el.ariaLabel || el.placeholder || el.name || "(unlabeled)";
+          const isSens = el.isSensitive ? `<span style="color:#dc2626;font-weight:700;">[SENSITIVE]</span> ` : "";
+          return `<div style="padding:1px 0; border-bottom:1px solid #f1f5f9;">
+            ${isSens}<span style="color:#0f766e;font-weight:600;">${i + 1}.${type}</span>: ${escapeHtml(label)}
+          </div>`;
+        }).join("") + (localElements.length > 15 ? `<div style="color:#64748b;font-style:italic;">+${localElements.length - 15} more...</div>` : "");
+      } else {
+        packetLocalElementsList.innerHTML = '<div style="color:#94a3b8;font-style:italic;">No elements detected yet.</div>';
+      }
+    }
+
+    if (packetOutboundPayload) {
+      if (outboundPayload) {
+        let jsonStr = typeof outboundPayload === "string" ? outboundPayload : JSON.stringify(outboundPayload, null, 2);
+        if (packetPayloadSize) {
+          const sizeKb = (new Blob([jsonStr]).size / 1024).toFixed(2);
+          packetPayloadSize.textContent = `${sizeKb} KB`;
+        }
+        // Highlight masked attributes like [REDACTED_...], [MASKED_...], [FILTERED]
+        const highlighted = escapeHtml(jsonStr).replace(/(&quot;value&quot;:\s*&quot;(\[REDACTED_[^&]+\]|\[MASKED_[^&]+\])&quot;|\[REDACTED_[^&]+\]|\[MASKED_[^&]+\])/g, '<span class="masked-attr-highlight">$1</span>');
+        packetOutboundPayload.innerHTML = highlighted;
+      } else {
+        packetOutboundPayload.innerHTML = '<span style="color:#94a3b8;font-style:italic;">No payload sent yet.</span>';
+        if (packetPayloadSize) packetPayloadSize.textContent = "0 KB";
+      }
+    }
   }
 
   // Milestone 18: Live Explainable Agent Overlay Telemetry Helper
@@ -550,6 +710,9 @@ document.addEventListener("DOMContentLoaded", () => {
     fusionStatus.textContent = "Local perception fused (on-device only)";
     fusionStatus.style.color = "#2e7d32";
     fusionDetails.style.display = "block";
+
+    // Update telemetry panel with detected local elements
+    updatePacketInspectionTelemetry(latestVisualElements, null);
   };
 
   // Helper function to execute local privacy redaction on the merged (DOM + OCR) regions (Milestones 11 & 12)
@@ -1893,6 +2056,13 @@ document.addEventListener("DOMContentLoaded", () => {
             redactedRegionsCount: latestMergedRegions ? latestMergedRegions.length : 0,
             timestamp: Date.now()
           };
+
+          // Update Packet Inspection Telemetry live before transmission
+          updatePacketInspectionTelemetry(latestVisualElements, {
+            task: taskToSend,
+            context: structuredContext,
+            privacyMetadata
+          });
 
           // Step 6: Send ONLY sanitized screenshot + structured data to Visual Gateway
           let gatewayResult = null;

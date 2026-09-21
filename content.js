@@ -80,9 +80,152 @@ function labelsMatch(a, b) {
 }
 
 /**
+ * Task 1: High-DPI, Zoom, and Scroll Drift Coordinate Normalizer.
+ * Maps raw screenshot coordinates from captureVisibleTab to layout viewport pixels.
+ *
+ * @param {number} rawX - Captured pixel X coordinate
+ * @param {number} rawY - Captured pixel Y coordinate
+ * @param {number} capturedWidth - Width of the captured screenshot buffer
+ * @param {number} capturedHeight - Height of the captured screenshot buffer
+ * @returns {{ clientX: number, clientY: number }} Layout viewport coordinates
+ */
+function normalizeScreenshotCoordinates(rawX, rawY, capturedWidth, capturedHeight) {
+  const dpr = (typeof window !== "undefined" && window.devicePixelRatio) ? window.devicePixelRatio : 1;
+  
+  // Derive viewport-relative dimensions
+  const viewportWidth = typeof window !== "undefined" ? window.innerWidth : 1280;
+  const viewportHeight = typeof window !== "undefined" ? window.innerHeight : 720;
+  
+  // Scale from captured image buffer dimensions to layout viewport pixels
+  const capW = capturedWidth || (viewportWidth * dpr);
+  const capH = capturedHeight || (viewportHeight * dpr);
+  const scaleX = viewportWidth / (capW / dpr);
+  const scaleY = viewportHeight / (capH / dpr);
+  
+  const clientX = (rawX * scaleX) / dpr;
+  const clientY = (rawY * scaleY) / dpr;
+  
+  return { clientX, clientY };
+}
+
+/**
+ * Task 2: Robust Synthetic Typing for Modern Frameworks (React 16+, Vue, Angular, Svelte).
+ * Focuses element, selects existing content, sets value via native property setter,
+ * and dispatches the full lifecycle of events (focus, keydown, input, keyup, change, blur).
+ *
+ * @param {HTMLElement} element - Target input or textarea element
+ * @param {string} text - Text value to type
+ */
+function simulateFrameworkCompatibleTyping(element, text) {
+  if (!element) return;
+  if (typeof element.focus === "function") {
+    element.focus();
+  }
+
+  // Clear existing content
+  if (typeof element.select === "function") {
+    try { element.select(); } catch (_) {}
+  }
+
+  // Access the native prototype setter to bypass React 16+ value tracking
+  const prototype = Object.getPrototypeOf(element);
+  const nativeSetter = Object.getOwnPropertyDescriptor(prototype, "value")?.set 
+    || (typeof window !== "undefined" && window.HTMLInputElement && Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set)
+    || (typeof window !== "undefined" && window.HTMLTextAreaElement && Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set);
+
+  if (nativeSetter) {
+    nativeSetter.call(element, text);
+  } else {
+    element.value = text;
+  }
+
+  // Dispatch full lifecycle events
+  const eventOptions = { bubbles: true, cancelable: true, composed: true };
+  if (typeof Event !== "undefined") {
+    element.dispatchEvent(new Event("focus", eventOptions));
+  }
+  if (typeof KeyboardEvent !== "undefined") {
+    element.dispatchEvent(new KeyboardEvent("keydown", { key: "Unidentified", ...eventOptions }));
+  } else if (typeof Event !== "undefined") {
+    element.dispatchEvent(new Event("keydown", eventOptions));
+  }
+  if (typeof InputEvent !== "undefined") {
+    element.dispatchEvent(new InputEvent("input", { data: text, inputType: "insertText", ...eventOptions }));
+  } else if (typeof Event !== "undefined") {
+    element.dispatchEvent(new Event("input", eventOptions));
+  }
+  if (typeof KeyboardEvent !== "undefined") {
+    element.dispatchEvent(new KeyboardEvent("keyup", { key: "Unidentified", ...eventOptions }));
+  } else if (typeof Event !== "undefined") {
+    element.dispatchEvent(new Event("keyup", eventOptions));
+  }
+  if (typeof Event !== "undefined") {
+    element.dispatchEvent(new Event("change", eventOptions));
+    element.dispatchEvent(new Event("blur", eventOptions));
+  }
+}
+
+/**
+ * Task 2: Robust Synthetic Click Simulation firing the complete pointer event sequence.
+ * Dispatches pointerover -> pointerenter -> pointerdown -> mousedown -> focus -> pointerup -> mouseup -> click.
+ *
+ * @param {HTMLElement} element - Target element to click
+ * @param {number} [clientX] - Viewport X coordinate
+ * @param {number} [clientY] - Viewport Y coordinate
+ */
+function simulateHumanClick(element, clientX, clientY) {
+  if (!element) return;
+  let cx = clientX;
+  let cy = clientY;
+  if (typeof cx !== "number" || typeof cy !== "number") {
+    if (typeof element.getBoundingClientRect === "function") {
+      const rect = element.getBoundingClientRect();
+      cx = rect.left + rect.width / 2;
+      cy = rect.top + rect.height / 2;
+    } else {
+      cx = 0;
+      cy = 0;
+    }
+  }
+
+  const init = {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    view: typeof window !== "undefined" ? window : null,
+    clientX: cx,
+    clientY: cy,
+    pointerId: 1,
+    pointerType: "mouse",
+    isPrimary: true
+  };
+
+  if (typeof PointerEvent !== "undefined") {
+    element.dispatchEvent(new PointerEvent("pointerover", init));
+    element.dispatchEvent(new PointerEvent("pointerenter", init));
+    element.dispatchEvent(new PointerEvent("pointerdown", init));
+  }
+  if (typeof MouseEvent !== "undefined") {
+    element.dispatchEvent(new MouseEvent("mousedown", init));
+  }
+  if (typeof element.focus === "function") {
+    element.focus();
+  }
+  if (typeof PointerEvent !== "undefined") {
+    element.dispatchEvent(new PointerEvent("pointerup", init));
+  }
+  if (typeof MouseEvent !== "undefined") {
+    element.dispatchEvent(new MouseEvent("mouseup", init));
+    element.dispatchEvent(new MouseEvent("click", init));
+  } else if (typeof element.click === "function") {
+    element.click();
+  }
+}
+
+/**
  * Safely executes a permitted action on the page if explicitly whitelisted.
  *
- * @param {Object} actionPayload - { action: string, target?: string, amount?: number, targetIndex?: number, targetType?: string, targetLabel?: string, localValue?: string }
+ * @param {Object} actionPayload - { action: string, target?: string, amount?: number, targetIndex?: number, targetType?: string, targetLabel?: string, localValue?: string, rawX?: number, rawY?: number, clientX?: number, clientY?: number, capturedWidth?: number, capturedHeight?: number }
  * @returns {Object} Execution result summary
  */
 function executeAction(actionPayload) {
@@ -103,6 +246,68 @@ function executeAction(actionPayload) {
 
   // 1. CLICK Action Execution (Milestone 5, 14 & 15 Generalized Grounding)
   if (action === "CLICK") {
+    // Coordinate-based target resolution (Task 1 Normalization & elementFromPoint)
+    if (typeof actionPayload.rawX === "number" && typeof actionPayload.rawY === "number") {
+      const capW = actionPayload.capturedWidth || (actionPayload.capturedDimensions && actionPayload.capturedDimensions.width) || (typeof window !== "undefined" ? window.innerWidth : 1280);
+      const capH = actionPayload.capturedHeight || (actionPayload.capturedDimensions && actionPayload.capturedDimensions.height) || (typeof window !== "undefined" ? window.innerHeight : 720);
+      const { clientX, clientY } = normalizeScreenshotCoordinates(actionPayload.rawX, actionPayload.rawY, capW, capH);
+      
+      let coordElement = (typeof document !== "undefined" && typeof document.elementFromPoint === "function")
+        ? document.elementFromPoint(clientX, clientY)
+        : null;
+
+      if (coordElement) {
+        if (typeof coordElement.scrollIntoView === "function") {
+          try {
+            coordElement.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+          } catch (_) {
+            try { coordElement.scrollIntoView({ block: "center", inline: "center" }); } catch (__) {}
+          }
+        }
+        const postRect = coordElement.getBoundingClientRect();
+        const postCx = postRect.left + postRect.width / 2;
+        const postCy = postRect.top + postRect.height / 2;
+        simulateHumanClick(coordElement, postCx, postCy);
+        return {
+          executed: true,
+          action: "CLICK",
+          targetType: (coordElement.tagName || "element").toLowerCase(),
+          targetLabel: (coordElement.innerText || coordElement.getAttribute?.("aria-label") || "point-target").slice(0, 50),
+          clientX: postCx,
+          clientY: postCy
+        };
+      }
+    }
+
+    // Direct client coordinate dispatch
+    if (typeof actionPayload.clientX === "number" && typeof actionPayload.clientY === "number") {
+      let coordElement = (typeof document !== "undefined" && typeof document.elementFromPoint === "function")
+        ? document.elementFromPoint(actionPayload.clientX, actionPayload.clientY)
+        : null;
+
+      if (coordElement) {
+        if (typeof coordElement.scrollIntoView === "function") {
+          try {
+            coordElement.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+          } catch (_) {
+            try { coordElement.scrollIntoView({ block: "center", inline: "center" }); } catch (__) {}
+          }
+        }
+        const postRect = coordElement.getBoundingClientRect();
+        const postCx = postRect.left + postRect.width / 2;
+        const postCy = postRect.top + postRect.height / 2;
+        simulateHumanClick(coordElement, postCx, postCy);
+        return {
+          executed: true,
+          action: "CLICK",
+          targetType: (coordElement.tagName || "element").toLowerCase(),
+          targetLabel: (coordElement.innerText || coordElement.getAttribute?.("aria-label") || "point-target").slice(0, 50),
+          clientX: postCx,
+          clientY: postCy
+        };
+      }
+    }
+
     // Generalized grounded path: payload has targetIndex
     if (typeof actionPayload.targetIndex === "number") {
       const { targetIndex, targetType, targetLabel } = actionPayload;
@@ -164,30 +369,46 @@ function executeAction(actionPayload) {
       }
 
       try {
-        // Scroll target into view if needed
+        // Scroll target into view smoothly before dispatching actions
         if (typeof matched.node.scrollIntoView === "function") {
           try {
-            matched.node.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
-          } catch (_) {}
+            matched.node.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+          } catch (_) {
+            try { matched.node.scrollIntoView({ block: "center", inline: "center" }); } catch (__) {}
+          }
+        }
+
+        // Recalculate target center coordinates post-scroll using getBoundingClientRect()
+        let postCx = 0;
+        let postCy = 0;
+        if (typeof matched.node.getBoundingClientRect === "function") {
+          const rect = matched.node.getBoundingClientRect();
+          postCx = rect.left + rect.width / 2;
+          postCy = rect.top + rect.height / 2;
         }
 
         if (matched.node.tagName && matched.node.tagName.toLowerCase() === "input") {
           matched.node.focus?.();
         }
-        matched.node.click();
+
+        // Execute robust human pointer & click simulation
+        simulateHumanClick(matched.node, postCx, postCy);
+
         return {
           executed: true,
           action: "CLICK",
           targetType: matched.type || targetType,
           targetLabel: matched.label || targetLabel,
-          groundedIndex: targetIndex
+          groundedIndex: targetIndex,
+          clientX: postCx,
+          clientY: postCy
         };
       } catch (err) {
         return { executed: false, reason: `Error during grounded click execution: ${err.message}` };
       }
     }
 
-    // Existing legacy path (untouched): action.target is a string key in ACTION_TARGET_MAP.
+    // Existing legacy path: action.target is a string key in ACTION_TARGET_MAP.
     if (!target || !Object.prototype.hasOwnProperty.call(ACTION_TARGET_MAP, target)) {
       return {
         executed: false,
@@ -230,19 +451,31 @@ function executeAction(actionPayload) {
     try {
       if (typeof element.scrollIntoView === "function") {
         try {
-          element.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
-        } catch (_) {}
+          element.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+        } catch (_) {
+          try { element.scrollIntoView({ block: "center", inline: "center" }); } catch (__) {}
+        }
       }
+
+      let postCx = 0;
+      let postCy = 0;
+      if (typeof element.getBoundingClientRect === "function") {
+        const rect = element.getBoundingClientRect();
+        postCx = rect.left + rect.width / 2;
+        postCy = rect.top + rect.height / 2;
+      }
+
       if (element.tagName.toLowerCase() === "input") {
         element.focus();
-        element.click();
-      } else {
-        element.click();
       }
+      simulateHumanClick(element, postCx, postCy);
+
       return {
         executed: true,
         action: "CLICK",
-        target: target
+        target: target,
+        clientX: postCx,
+        clientY: postCy
       };
     } catch (err) {
       return {
@@ -342,32 +575,29 @@ function executeAction(actionPayload) {
       };
     }
 
-    // Scroll element into view if needed
+    // Scroll element into view smoothly before typing
     if (typeof el.scrollIntoView === "function") {
       try {
-        el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
-      } catch (_) {}
+        el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+      } catch (_) {
+        try { el.scrollIntoView({ block: "center", inline: "center" }); } catch (__) {}
+      }
     }
 
-    // 5. Set value via native property setter + dispatch input/change events
+    // 5. Set value via framework-compatible typing simulation + dispatch full event lifecycle
     try {
       if (isInput || isTextarea) {
-        const proto = isInput
-          ? (typeof window !== "undefined" && window.HTMLInputElement ? window.HTMLInputElement.prototype : Object.getPrototypeOf(el))
-          : (typeof window !== "undefined" && window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : Object.getPrototypeOf(el));
-        const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-        if (nativeSetter) {
-          nativeSetter.call(el, String(fillValue));
-        } else {
-          el.value = String(fillValue);
-        }
-        el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+        simulateFrameworkCompatibleTyping(el, String(fillValue));
       } else if (isContentEditable || isRoleTextbox) {
         if (typeof el.focus === "function") el.focus();
         el.textContent = String(fillValue);
-        el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+        const eventOptions = { bubbles: true, cancelable: true, composed: true };
+        el.dispatchEvent(new Event("focus", eventOptions));
+        el.dispatchEvent(new KeyboardEvent("keydown", { key: "Unidentified", ...eventOptions }));
+        el.dispatchEvent(new InputEvent("input", { data: String(fillValue), inputType: "insertText", ...eventOptions }));
+        el.dispatchEvent(new KeyboardEvent("keyup", { key: "Unidentified", ...eventOptions }));
+        el.dispatchEvent(new Event("change", eventOptions));
+        el.dispatchEvent(new Event("blur", eventOptions));
       }
 
       // 7. Verify locally afterward (never return actual value string in result object)
@@ -460,22 +690,22 @@ function executeAction(actionPayload) {
 
       if (fillVal !== null && fillVal !== undefined) {
         try {
+          if (typeof el.scrollIntoView === "function") {
+            try { el.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" }); } catch (_) {}
+          }
+
           if (isInput || isTextarea) {
-            const proto = isInput
-              ? (typeof window !== "undefined" && window.HTMLInputElement ? window.HTMLInputElement.prototype : Object.getPrototypeOf(el))
-              : (typeof window !== "undefined" && window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : Object.getPrototypeOf(el));
-            const nativeSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-            if (nativeSetter) {
-              nativeSetter.call(el, String(fillVal));
-            } else {
-              el.value = String(fillVal);
-            }
-            el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
-            el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+            simulateFrameworkCompatibleTyping(el, String(fillVal));
           } else if (isContentEditable || isRoleTextbox) {
+            if (typeof el.focus === "function") el.focus();
             el.textContent = String(fillVal);
-            el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
-            el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+            const eventOptions = { bubbles: true, cancelable: true, composed: true };
+            el.dispatchEvent(new Event("focus", eventOptions));
+            el.dispatchEvent(new KeyboardEvent("keydown", { key: "Unidentified", ...eventOptions }));
+            el.dispatchEvent(new InputEvent("input", { data: String(fillVal), inputType: "insertText", ...eventOptions }));
+            el.dispatchEvent(new KeyboardEvent("keyup", { key: "Unidentified", ...eventOptions }));
+            el.dispatchEvent(new Event("change", eventOptions));
+            el.dispatchEvent(new Event("blur", eventOptions));
           }
 
           let verified = false;
@@ -637,7 +867,17 @@ function executeAction(actionPayload) {
 
       if (submitBtn) {
         try {
-          submitBtn.click();
+          if (typeof submitBtn.scrollIntoView === "function") {
+            try { submitBtn.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" }); } catch (_) {}
+          }
+          let postCx = 0;
+          let postCy = 0;
+          if (typeof submitBtn.getBoundingClientRect === "function") {
+            const rect = submitBtn.getBoundingClientRect();
+            postCx = rect.left + rect.width / 2;
+            postCy = rect.top + rect.height / 2;
+          }
+          simulateHumanClick(submitBtn, postCx, postCy);
           submissionMethod = "search_button_click";
           submitted = true;
         } catch (btnErr) {
@@ -655,6 +895,7 @@ function executeAction(actionPayload) {
         targetInput.dispatchEvent(new KeyboardEvent("keydown", enterOpts));
         targetInput.dispatchEvent(new KeyboardEvent("keypress", enterOpts));
         targetInput.dispatchEvent(new KeyboardEvent("keyup", enterOpts));
+        targetInput.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
         if (!submitted) {
           submissionMethod = "keyboard_enter";
           submitted = true;
@@ -997,11 +1238,11 @@ function extractFormFieldLabel(el, type) {
  */
 function classifyVisualElement(el, fieldId = null) {
   if (!el) return null;
-  // Milestone 18: Isolate agent overlay elements from visual perception
-  if (el.closest && (el.closest("#sih-agent-overlay-root") || el.closest("[id^='sih-agent-overlay']"))) {
+  // Milestone 18 & Task 3: Isolate agent overlay elements from visual perception
+  if (el.closest && (el.closest("#sih-agent-overlay-root") || el.closest("[id^='sih-agent-overlay']") || el.closest("#onevision-target-highlight") || el.closest("[id^='onevision-']"))) {
     return null;
   }
-  if (el.id && el.id.startsWith("sih-agent-overlay")) {
+  if (el.id && (el.id.startsWith("sih-agent-overlay") || el.id.startsWith("onevision-"))) {
     return null;
   }
 
@@ -1199,8 +1440,11 @@ function isSensitiveElement(el) {
   if (!el || !el.tagName) {
     return false;
   }
-  // Milestone 18: Isolate agent overlay elements from sensitive detection
-  if (el.closest && (el.closest("#sih-agent-overlay-root") || el.closest("[id^='sih-agent-overlay']"))) {
+  // Milestone 18 & Task 3: Isolate agent overlay elements from sensitive detection
+  if (el.closest && (el.closest("#sih-agent-overlay-root") || el.closest("[id^='sih-agent-overlay']") || el.closest("#onevision-target-highlight") || el.closest("[id^='onevision-']"))) {
+    return false;
+  }
+  if (el.id && (el.id.startsWith("sih-agent-overlay") || el.id.startsWith("onevision-"))) {
     return false;
   }
   const tagName = el.tagName.toLowerCase();
@@ -1465,17 +1709,42 @@ function showInPageApprovalModal(actionDetails, callback) {
 }
 
 // =====================================================================
-// Milestone 18: Live Explainable Agent Overlay (HUD Telemetry)
-// Lightweight in-page bounding box & explainability card for live page demo
+// Milestone 18 & Task 3: Interactive Visual Highlighting & Human-in-the-Loop Confirmation Overlay
+// Non-destructive HUD overlay (#onevision-target-highlight / #sih-agent-overlay-root)
 // =====================================================================
 let currentOverlayData = null;
 let currentOverlayTargetNode = null;
 let overlayScrollListener = null;
 
+function ensureOverlayKeyframes() {
+  if (typeof document === "undefined" || !document.head) return;
+  if (!document.getElementById("onevision-overlay-styles")) {
+    const style = document.createElement("style");
+    style.id = "onevision-overlay-styles";
+    style.textContent = `
+      @keyframes onevision-target-pulse {
+        0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7), inset 0 0 4px rgba(59, 130, 246, 0.3); border-color: #3b82f6; }
+        50% { box-shadow: 0 0 16px 4px rgba(59, 130, 246, 0.5), inset 0 0 8px rgba(59, 130, 246, 0.4); border-color: #60a5fa; }
+        100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7), inset 0 0 4px rgba(59, 130, 246, 0.3); border-color: #3b82f6; }
+      }
+      @keyframes onevision-exec-flash {
+        0% { background-color: rgba(16, 185, 129, 0.45); box-shadow: 0 0 20px rgba(16, 185, 129, 0.8); border-color: #10b981; }
+        50% { background-color: rgba(16, 185, 129, 0.25); box-shadow: 0 0 24px rgba(16, 185, 129, 0.6); border-color: #34d399; }
+        100% { background-color: transparent; box-shadow: 0 0 12px rgba(16, 185, 129, 0.5); border-color: #10b981; }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+}
+
 function clearAgentOverlay() {
   const existing = document.getElementById("sih-agent-overlay-root");
   if (existing) {
     existing.remove();
+  }
+  const onevisionExisting = document.getElementById("onevision-target-highlight");
+  if (onevisionExisting) {
+    onevisionExisting.remove();
   }
   currentOverlayData = null;
   currentOverlayTargetNode = null;
@@ -1561,6 +1830,7 @@ function getOverlayTargetRect(targetNode, fallbackBbox) {
 
 function renderOverlayUI(data, rect) {
   if (!rect || typeof document === "undefined" || !document.body) return;
+  ensureOverlayKeyframes();
 
   let root = document.getElementById("sih-agent-overlay-root");
   if (!root) {
@@ -1595,6 +1865,21 @@ function renderOverlayUI(data, rect) {
     root.appendChild(box);
   }
 
+  // Task 3: #onevision-target-highlight HUD element alias with pointer-events: none
+  let onevisionHighlight = document.getElementById("onevision-target-highlight");
+  if (!onevisionHighlight) {
+    onevisionHighlight = document.createElement("div");
+    onevisionHighlight.id = "onevision-target-highlight";
+    Object.assign(onevisionHighlight.style, {
+      position: "absolute",
+      pointerEvents: "none",
+      borderRadius: "6px",
+      boxSizing: "border-box",
+      zIndex: "2147483646"
+    });
+    root.appendChild(onevisionHighlight);
+  }
+
   let card = document.getElementById("sih-agent-overlay-card");
   if (!card) {
     card = document.createElement("div");
@@ -1623,12 +1908,16 @@ function renderOverlayUI(data, rect) {
   const state = data.state || "GROUNDED";
   let borderColor = "#6366f1";
   let boxShadow = "0 0 12px rgba(99, 102, 241, 0.5), inset 0 0 6px rgba(99, 102, 241, 0.2)";
+  let boxAnimation = "none";
   let badgeHtml = "";
   let contentHtml = "";
+
+  const confVal = data.confidence !== undefined ? (typeof data.confidence === "number" ? data.confidence.toFixed(2) : String(data.confidence)) : "1.00";
 
   if (state === "EXECUTING") {
     borderColor = "#f59e0b";
     boxShadow = "0 0 16px rgba(245, 158, 11, 0.6), inset 0 0 8px rgba(245, 158, 11, 0.25)";
+    boxAnimation = "none";
     badgeHtml = `<div style="font-size: 10px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: #fbbf24; background: rgba(245, 158, 11, 0.2); border: 1px solid rgba(245, 158, 11, 0.4); padding: 2px 6px; border-radius: 4px; display: inline-block; margin-bottom: 6px;">EXECUTING &#x26A1;</div>`;
     contentHtml = `
       <div><span style="color:#94a3b8; font-weight: 600;">Action: </span><span style="color:#ffffff; font-weight: 700;">${escapeHtml(data.action || "CLICK")}</span></div>
@@ -1637,14 +1926,26 @@ function renderOverlayUI(data, rect) {
   } else if (state === "VERIFIED") {
     borderColor = "#10b981";
     boxShadow = "0 0 16px rgba(16, 185, 129, 0.6), inset 0 0 8px rgba(16, 185, 129, 0.25)";
+    boxAnimation = "onevision-exec-flash 0.6s ease";
     badgeHtml = `<div style="font-size: 10px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: #34d399; background: rgba(16, 185, 129, 0.2); border: 1px solid rgba(16, 185, 129, 0.4); padding: 2px 6px; border-radius: 4px; display: inline-block; margin-bottom: 6px;">&#x2713; VERIFIED</div>`;
     contentHtml = `
       <div><span style="color:#94a3b8; font-weight: 600;">Action: </span><span style="color:#ffffff; font-weight: 700;">${escapeHtml(data.action || "CLICK")}</span></div>
       <div><span style="color:#94a3b8; font-weight: 600;">Target: </span><span style="color:#e2e8f0;">${escapeHtml(data.targetLabel || data.target || "element")}</span></div>
     `;
+  } else if (state === "WAITING_APPROVAL" || state === "PENDING_CONFIRMATION" || state === "APPROVAL_REQUIRED") {
+    borderColor = "#3b82f6";
+    boxShadow = "0 0 16px rgba(59, 130, 246, 0.6), inset 0 0 8px rgba(59, 130, 246, 0.3)";
+    boxAnimation = "onevision-target-pulse 1.5s infinite";
+    badgeHtml = `<div style="font-size: 10px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: #60a5fa; background: rgba(59, 130, 246, 0.2); border: 1px solid rgba(59, 130, 246, 0.4); padding: 2px 6px; border-radius: 4px; display: inline-block; margin-bottom: 6px;">CONFIRMATION PENDING &bull; Conf: ${escapeHtml(confVal)}</div>`;
+    contentHtml = `
+      <div><span style="color:#94a3b8; font-weight: 600;">Action: </span><span style="color:#ffffff; font-weight: 700;">${escapeHtml(data.action || "CLICK")}</span></div>
+      <div><span style="color:#94a3b8; font-weight: 600;">Target: </span><span style="color:#e2e8f0;">${escapeHtml(data.targetLabel || data.target || "element")}</span></div>
+      <div><span style="color:#94a3b8; font-weight: 600;">Reason: </span><span style="color:#93c5fd;">${escapeHtml(data.reason || "Action awaits user confirmation")}</span></div>
+    `;
   } else if (state === "SAFETY_BLOCKED") {
     borderColor = "#ef4444";
     boxShadow = "0 0 16px rgba(239, 68, 68, 0.6), inset 0 0 8px rgba(239, 68, 68, 0.25)";
+    boxAnimation = "none";
     badgeHtml = `<div style="font-size: 10px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: #f87171; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.4); padding: 2px 6px; border-radius: 4px; display: inline-block; margin-bottom: 6px;">&#x1F6E1; SAFETY BLOCKED</div>`;
     contentHtml = `
       <div><span style="color:#94a3b8; font-weight: 600;">Reason: </span><span style="color:#fca5a5; font-weight: 600;">${escapeHtml(data.reason || "Action blocked by safety policy")}</span></div>
@@ -1652,10 +1953,10 @@ function renderOverlayUI(data, rect) {
     `;
   } else {
     // GROUNDED ("AGENT TARGET")
-    borderColor = "#6366f1";
-    boxShadow = "0 0 12px rgba(99, 102, 241, 0.5), inset 0 0 6px rgba(99, 102, 241, 0.2)";
-    badgeHtml = `<div style="font-size: 10px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: #818cf8; background: rgba(99, 102, 241, 0.18); border: 1px solid rgba(99, 102, 241, 0.35); padding: 2px 6px; border-radius: 4px; display: inline-block; margin-bottom: 6px;">AGENT TARGET</div>`;
-    const confVal = data.confidence !== undefined ? (typeof data.confidence === "number" ? data.confidence.toFixed(2) : String(data.confidence)) : "1.00";
+    borderColor = "#3b82f6";
+    boxShadow = "0 0 14px rgba(59, 130, 246, 0.5), inset 0 0 6px rgba(59, 130, 246, 0.2)";
+    boxAnimation = "none";
+    badgeHtml = `<div style="font-size: 10px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: #60a5fa; background: rgba(59, 130, 246, 0.18); border: 1px solid rgba(59, 130, 246, 0.35); padding: 2px 6px; border-radius: 4px; display: inline-block; margin-bottom: 6px;">AGENT TARGET &bull; Conf: ${escapeHtml(confVal)}</div>`;
     contentHtml = `
       <div><span style="color:#94a3b8; font-weight: 600;">Action: </span><span style="color:#ffffff; font-weight: 700;">${escapeHtml(data.action || "CLICK")}</span></div>
       <div><span style="color:#94a3b8; font-weight: 600;">Target: </span><span style="color:#e2e8f0;">${escapeHtml(data.targetLabel || data.target || "element")}</span></div>
@@ -1671,6 +1972,16 @@ function renderOverlayUI(data, rect) {
   box.style.height = `${Math.max(rect.height, 24)}px`;
   box.style.border = `2px solid ${borderColor}`;
   box.style.boxShadow = boxShadow;
+  box.style.animation = boxAnimation;
+
+  // Sync onevision target highlight alias
+  onevisionHighlight.style.top = `${rect.top}px`;
+  onevisionHighlight.style.left = `${rect.left}px`;
+  onevisionHighlight.style.width = `${Math.max(rect.width, 24)}px`;
+  onevisionHighlight.style.height = `${Math.max(rect.height, 24)}px`;
+  onevisionHighlight.style.border = `2px solid ${borderColor}`;
+  onevisionHighlight.style.boxShadow = boxShadow;
+  onevisionHighlight.style.animation = boxAnimation;
 
   // Update card styles and contents
   card.style.backgroundColor = "rgba(15, 23, 42, 0.94)";
@@ -1848,6 +2159,9 @@ if (typeof module !== "undefined" && module.exports) {
     executeAction,
     normalizeLabel,
     labelsMatch,
+    normalizeScreenshotCoordinates,
+    simulateFrameworkCompatibleTyping,
+    simulateHumanClick,
     showInPageApprovalModal,
     removeInPageApprovalModal,
     showAgentOverlay,
