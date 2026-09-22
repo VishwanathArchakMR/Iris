@@ -7,7 +7,8 @@
   "permissions": [
     "activeTab",
     "scripting",
-    "tabs"
+    "tabs",
+    "storage"
   ],
 
   "host_permissions": [
@@ -62,7 +63,8 @@
         "change-detector.js",
         "reasoning-planner.js",
         "task-parser.js",
-        "evaluation-tracker.js"
+        "evaluation-tracker.js",
+        "gemini-nano-reasoner.js"
       ],
       "matches": ["<all_urls>"]
     }

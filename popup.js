@@ -491,10 +491,14 @@ document.addEventListener("DOMContentLoaded", () => {
    */
   const fetchZeroShotPlan = async (userPrompt) => {
     try {
+      const stored = await new Promise(r => chrome.storage.local.get(["geminiApiKey"], r));
+      const apiKey = stored.geminiApiKey || null;
+      const body = { task: userPrompt };
+      if (apiKey) body.api_key = apiKey;
       const res = await fetch("http://localhost:8000/api/plan-task", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task: userPrompt })
+        body: JSON.stringify(body)
       });
       if (res.ok) {
         const data = await res.json();
@@ -519,6 +523,204 @@ document.addEventListener("DOMContentLoaded", () => {
       `3. Verify final page state`
     ];
   };
+
+  // =====================================================================
+  // Reasoning Engine: Mode Switcher, Status Badges, Key Storage
+  // =====================================================================
+
+  const nanoStatusBadge = document.getElementById("nanoStatusBadge");
+  const backendStatusBadge = document.getElementById("backendStatusBadge");
+  const apiKeyInput = document.getElementById("apiKeyInput");
+  const apiKeyToggleBtn = document.getElementById("apiKeyToggleBtn");
+  const saveApiKeyBtn = document.getElementById("saveApiKeyBtn");
+  const apiKeySaveStatus = document.getElementById("apiKeySaveStatus");
+  const modeRadios = document.querySelectorAll('input[name="reasoningMode"]');
+
+  // Persisted state
+  let _reasoningMode = "auto"; // 'nano' | 'api' | 'auto'
+  let _savedApiKey = "";
+
+  /** Probe Gemini Nano availability and update badge */
+  const _probeNano = async () => {
+    if (!nanoStatusBadge) return;
+    try {
+      if (window.GeminiNanoReasoner) {
+        const check = await window.GeminiNanoReasoner.checkNanoAvailability();
+        if (check.available) {
+          nanoStatusBadge.textContent = check.status === "after-download"
+            ? "Nano: Downloading"
+            : "Nano: Available ✓";
+          nanoStatusBadge.style.background = check.status === "after-download" ? "#fef3c7" : "#d1fae5";
+          nanoStatusBadge.style.color = check.status === "after-download" ? "#92400e" : "#065f46";
+        } else {
+          nanoStatusBadge.textContent = "Nano: Unsupported";
+          nanoStatusBadge.style.background = "#fee2e2";
+          nanoStatusBadge.style.color = "#991b1b";
+        }
+      } else {
+        nanoStatusBadge.textContent = "Nano: Not loaded";
+      }
+    } catch (e) {
+      if (nanoStatusBadge) {
+        nanoStatusBadge.textContent = "Nano: Error";
+        nanoStatusBadge.style.background = "#fee2e2";
+      }
+    }
+  };
+
+  /** Probe backend health and update badge */
+  const _probeBackend = async () => {
+    if (!backendStatusBadge) return;
+    try {
+      const res = await fetch("http://localhost:8000/api/health", { signal: AbortSignal.timeout(3000) });
+      if (res.ok) {
+        backendStatusBadge.textContent = "Backend: Online ✓";
+        backendStatusBadge.style.background = "#d1fae5";
+        backendStatusBadge.style.color = "#065f46";
+      } else {
+        throw new Error("Non-OK");
+      }
+    } catch (_) {
+      if (backendStatusBadge) {
+        backendStatusBadge.textContent = "Backend: Offline";
+        backendStatusBadge.style.background = "#fee2e2";
+        backendStatusBadge.style.color = "#991b1b";
+      }
+    }
+  };
+
+  /** Load persisted settings on popup open */
+  const _loadEngineSettings = () => {
+    try {
+      chrome.storage.local.get(["reasoningMode", "geminiApiKey"], (items) => {
+        if (chrome.runtime.lastError) return;
+        if (items.reasoningMode) {
+          _reasoningMode = items.reasoningMode;
+          modeRadios.forEach(r => { r.checked = (r.value === _reasoningMode); });
+        }
+        if (items.geminiApiKey && apiKeyInput) {
+          _savedApiKey = items.geminiApiKey;
+          apiKeyInput.value = items.geminiApiKey;
+        }
+      });
+    } catch (e) {}
+  };
+
+  // Wire up mode radio change
+  modeRadios.forEach(radio => {
+    radio.addEventListener("change", () => {
+      _reasoningMode = radio.value;
+      try {
+        chrome.storage.local.set({ reasoningMode: _reasoningMode });
+      } catch (e) {}
+      console.log(`[ENGINE] Mode changed to: ${_reasoningMode}`);
+    });
+  });
+
+  // Wire up API key show/hide
+  if (apiKeyToggleBtn && apiKeyInput) {
+    apiKeyToggleBtn.addEventListener("click", () => {
+      apiKeyInput.type = apiKeyInput.type === "password" ? "text" : "password";
+    });
+  }
+
+  // Wire up Save Key button
+  if (saveApiKeyBtn && apiKeyInput) {
+    saveApiKeyBtn.addEventListener("click", () => {
+      const key = apiKeyInput.value.trim();
+      _savedApiKey = key;
+      try {
+        chrome.storage.local.set({ geminiApiKey: key }, () => {
+          if (chrome.runtime.lastError) return;
+          if (apiKeySaveStatus) {
+            apiKeySaveStatus.style.display = "block";
+            setTimeout(() => { if (apiKeySaveStatus) apiKeySaveStatus.style.display = "none"; }, 2500);
+          }
+          // Re-probe backend with new key
+          _probeBackend();
+        });
+      } catch (e) {}
+    });
+  }
+
+  // Initialize engine on popup load
+  _loadEngineSettings();
+  _probeNano();
+  _probeBackend();
+
+  /**
+   * executeReasoningStep — Routes reasoning through Nano (offline) / Cloud (API) / Auto-Hybrid.
+   * Returns a gateway-compatible action payload.
+   *
+   * @param {string} goal - User's current step goal
+   * @param {Array}  perceivedElements - Sanitized DOM element list
+   * @param {string} pageTitle - Current page title
+   * @param {string} redactedSample - Sanitized page text sample
+   * @param {string} planStep - Current plan step description
+   * @returns {Promise<{data: object, latencyMs: number}>}
+   */
+  const executeReasoningStep = async (goal, perceivedElements, pageTitle, redactedSample, planStep) => {
+    const tStart = performance.now();
+    const mode = _reasoningMode || "auto";
+    const apiKey = _savedApiKey || "";
+
+    // --- PATH A: Offline Nano ---
+    if ((mode === "nano" || mode === "auto") && window.GeminiNanoReasoner) {
+      const check = await window.GeminiNanoReasoner.checkNanoAvailability();
+      if (check.available) {
+        try {
+          console.log("[ENGINE] Using Gemini Nano (on-device, zero-leak)");
+          const nanoAction = await window.GeminiNanoReasoner.reasonWithNano(goal, perceivedElements, planStep);
+          const latencyMs = Math.round(performance.now() - tStart);
+          // Wrap into gateway-compatible envelope
+          return {
+            data: {
+              status: "success",
+              action: nanoAction,
+              reasoning: nanoAction.thought || "Nano on-device reasoning",
+              provider: "Gemini Nano",
+              providerType: "nano",
+              fallbackUsed: false,
+              agentMode: "nano"
+            },
+            latencyMs
+          };
+        } catch (nanoErr) {
+          console.warn("[ENGINE] Nano failed:", nanoErr);
+          if (mode === "nano") {
+            // Hard-Nano mode: do not fall through
+            throw nanoErr;
+          }
+          console.log("[ENGINE] Nano failed, falling back to Cloud...");
+        }
+      } else if (mode === "nano") {
+        throw new Error(`Gemini Nano unavailable: ${check.reason}`);
+      }
+    }
+
+    // --- PATH B: Cloud API via /api/reason ---
+    console.log("[ENGINE] Dispatching to Cloud Gemini Gateway (/api/reason)");
+    const payload = {
+      goal,
+      elements: perceivedElements.slice(0, 40), // send up to 40 elements
+      page_title: pageTitle || "",
+      redacted_sample: redactedSample || "",
+      plan_step: planStep || null,
+      api_key: apiKey || null
+    };
+    const res = await fetch("http://localhost:8000/api/reason", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const latencyMs = Math.round(performance.now() - tStart);
+    if (!res.ok) {
+      throw new Error(`/api/reason HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    return { data, latencyMs };
+  };
+
 
   /**
    * Task 4: Render Active Plan Checklist with Live Progress
@@ -2158,18 +2360,35 @@ document.addEventListener("DOMContentLoaded", () => {
             privacyMetadata
           });
 
-          // Step 6: Send ONLY sanitized screenshot + structured data to Visual Gateway
+
+          // Step 6: Send reasoning request via chosen engine (Nano / Cloud / Auto-Hybrid)
           let gatewayResult = null;
+          const currentPlanStepHint = zeroShotPlan && zeroShotPlan[currentStep - 1] ? zeroShotPlan[currentStep - 1] : null;
           try {
             console.log("[SIH26171] Gateway request started");
-            gatewayResult = await sendToVisualGateway(
-              sanitizedBlob,
-              taskToSend,
-              structuredContext,
-              privacyMetadata,
-              requestId
-            );
-            console.log("[SIH26171] Gateway response received");
+
+            // Try executeReasoningStep first (Nano / /api/reason — faster, lower latency)
+            try {
+              gatewayResult = await executeReasoningStep(
+                taskToSend,
+                latestVisualElements || [],
+                pageData?.title || "",
+                pageData?.redactedSample || "",
+                currentPlanStepHint
+              );
+              console.log("[SIH26171] Reasoning engine response received");
+            } catch (reasonErr) {
+              console.warn("[ENGINE] executeReasoningStep failed, falling through to visual gateway:", reasonErr.message);
+              // Fall through to full multipart visual gateway call
+              gatewayResult = await sendToVisualGateway(
+                sanitizedBlob,
+                taskToSend,
+                structuredContext,
+                privacyMetadata,
+                requestId
+              );
+              console.log("[SIH26171] Visual gateway response received (fallback)");
+            }
           } catch (gwErr) {
             console.warn("Visual gateway upload error, falling back to text-only pipeline:", gwErr);
             if (agentSanitizedUploadStatus) {
@@ -2209,15 +2428,20 @@ document.addEventListener("DOMContentLoaded", () => {
             agentSanitizedUploadStatus.textContent = "ALLOWED (Delivered to Gateway)";
             agentSanitizedUploadStatus.style.color = "#2e7d32";
           }
-          const isGeminiSuccess = data.provider === "Gemini" && !data.fallbackUsed;
-          updatePipelineStage("REASONING", "completed", isGeminiSuccess ? "Gemini (Sanitized) ✓" : "Local Reasoning ✓");
+          const isNanoSuccess = data.providerType === "nano";
+          const isGeminiSuccess = (data.provider === "Gemini" || data.providerType === "gemini") && !data.fallbackUsed && !isNanoSuccess;
+          updatePipelineStage("REASONING", "completed",
+            isNanoSuccess ? "Nano (On-Device) ✓" : isGeminiSuccess ? "Gemini (Cloud) ✓" : "Local Reasoning ✓");
 
           // Section AI Provider Telemetry
 
           const isFallback = data.fallbackUsed || data.provider === "Demo fallback" || data.providerType === "gemini-fallback";
 
           if (agentModeStatus) {
-            if (isGeminiSuccess) {
+            if (isNanoSuccess) {
+              agentModeStatus.textContent = "AI PROVIDER: GEMINI NANO";
+              agentModeStatus.style.color = "#5b21b6";
+            } else if (isGeminiSuccess) {
               agentModeStatus.textContent = "AI PROVIDER: GEMINI";
               agentModeStatus.style.color = "#1565c0";
             } else if (isFallback) {
@@ -2230,7 +2454,9 @@ document.addEventListener("DOMContentLoaded", () => {
           }
 
           if (agentModeSubtext) {
-            if (isGeminiSuccess) {
+            if (isNanoSuccess) {
+              agentModeSubtext.textContent = "(On-device Gemini Nano; zero network traffic, fully private)";
+            } else if (isGeminiSuccess) {
               agentModeSubtext.textContent = "(Server-side Gemini reasoning over sanitized context; zero PII transmitted)";
             } else if (isFallback) {
               agentModeSubtext.textContent = "(Local deterministic fallback)";
@@ -2241,7 +2467,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
           const agentReasoningLocation = document.getElementById("agentReasoningLocation");
           if (agentReasoningLocation) {
-            if (isGeminiSuccess) {
+            if (isNanoSuccess) {
+              agentReasoningLocation.textContent = "ON-DEVICE (Gemini Nano)";
+              agentReasoningLocation.style.color = "#5b21b6";
+            } else if (isGeminiSuccess) {
               agentReasoningLocation.textContent = "GEMINI (Sanitized Context)";
               agentReasoningLocation.style.color = "#1565c0";
             } else if (isFallback) {

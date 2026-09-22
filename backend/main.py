@@ -80,7 +80,7 @@ async def serve_demo_page(page_name: str):
 # Milestones 3–6: Text-Only Sanitized Context (Preserved & Backwards-Compatible)
 # =====================================================================
 
-ALLOWED_ACTIONS = {"CLICK", "SCROLL", "FILL", "FILL_FORM", "WARN", "NONE", "SUBMIT"}
+ALLOWED_ACTIONS = {"CLICK", "SCROLL", "FILL", "FILL_FORM", "WARN", "NONE", "SUBMIT", "NAVIGATE"}
 FORBIDDEN_VALUE_KEYS = {"value", "fieldvalue", "field_value", "localvalue", "local_value"}
 
 def assert_no_forbidden_value_keys(data: Any, path: str = ""):
@@ -109,6 +109,17 @@ class PageContext(BaseModel):
 
 class PlanTaskRequest(BaseModel):
     task: str
+    api_key: Optional[str] = None
+    model_name: Optional[str] = None
+
+class ReasonRequest(BaseModel):
+    goal: str
+    elements: List[Dict[str, Any]] = []
+    page_title: Optional[str] = ""
+    redacted_sample: Optional[str] = ""
+    api_key: Optional[str] = None
+    model_name: Optional[str] = None
+    plan_step: Optional[str] = None
 
 # Schema for structured agent decision (supports optional amount for SCROLL, batched actions, and ReAct thought)
 class AgentAction(BaseModel):
@@ -635,7 +646,7 @@ class DemoAgentProvider:
 
         # Signal 3: Generalized Generic Grounding for buttons, links, and interactive elements
         ACTIONABLE_TYPES = {"button", "link", "input", "textarea", "select", "checkbox", "radio", "tab", "menuitem", "switch", "element"}
-        GROUNDING_MIN_SCORE = 0.35
+        GROUNDING_MIN_SCORE = 0.50  # Raised from 0.35 — prevents low-confidence spurious matches on unrelated elements
 
         # Clean search phrase
         target_query = task_lower
@@ -745,12 +756,19 @@ GEMINI_SYSTEM_INSTRUCTION = """You are the visual perception reasoning agent for
 Your task is to analyze the user's natural language goal and the sanitized list of perceived webpage elements, then propose the next single structured action.
 
 PERMITTED ACTIONS:
+- NAVIGATE: Navigate the browser to a URL (e.g. 'https://www.youtube.com'). Use this FIRST when the task requires going to a specific website not currently open. Set `target` to the full https:// URL.
 - CLICK: Click a button, link, tab, or interactive element.
 - FILL: Focus/fill a single form field (provide target or fieldHint). Do NOT generate sensitive values or passwords.
 - FILL_FORM: User wants to fill an entire form or profile (e.g. 'fill the form'). Field values are supplied locally from the client's safe profile.
 - SUBMIT: Submit a search or form (target identifies search or form).
 - SCROLL: Scroll viewport (amount in pixels, default 500).
 - NONE: Ambiguous request, unsupported intent, or no matching element found.
+
+NAVIGATION RULES:
+- If the user says "open youtube", "go to amazon", "open spotify", etc., your FIRST action MUST be NAVIGATE with the correct https:// URL.
+- Do NOT try to CLICK a search result or any element when the right action is simply navigating to a website.
+- Common sites: youtube→https://www.youtube.com, amazon→https://www.amazon.in, google→https://www.google.com, github→https://www.github.com
+- Only use NAVIGATE for safe http/https URLs. Never output javascript: or data: URLs.
 
 For FILL:
 - target identifies the input element.
@@ -776,8 +794,8 @@ Output strictly valid JSON matching this schema:
   "observation": "I am currently on...",
   "current_plan_step": "e.g. 3. Type 'kgf song' into search bar",
   "thought": "Internal monologue explaining reasoning...",
-  "action": "CLICK" | "FILL" | "FILL_FORM" | "SUBMIT" | "SCROLL" | "NONE",
-  "target": "target element label or null",
+  "action": "NAVIGATE" | "CLICK" | "FILL" | "FILL_FORM" | "SUBMIT" | "SCROLL" | "NONE",
+  "target": "https://url for NAVIGATE, element label for CLICK/FILL, or null",
   "targetRole": "button | link | input | textarea | select | etc., or null",
   "targetIndex": integer or null,
   "fieldHint": "field hint if FILL, or null",
@@ -790,8 +808,8 @@ Output strictly valid JSON matching this schema:
   "requiresApproval": boolean (true for submit, delete, purchase, confirm, or destructive/consequential actions),
   "actions": [
     {
-      "action": "CLICK" | "FILL" | "SUBMIT" | "SCROLL",
-      "target": "target element label",
+      "action": "NAVIGATE" | "CLICK" | "FILL" | "SUBMIT" | "SCROLL",
+      "target": "https://url or element label",
       "targetIndex": integer,
       "value": "string or null"
     }
@@ -800,23 +818,25 @@ Output strictly valid JSON matching this schema:
 
 SECURITY & PRIVACY RULES:
 1. Output MUST be valid JSON only. No markdown fences, no explanatory text outside JSON.
-2. NEVER output executable code, JavaScript, eval, URLs, or browser commands.
+2. For NAVIGATE: output ONLY https:// or http:// URLs. NEVER output javascript:, data:, or file: URLs.
 3. NEVER output passwords or sensitive data.
 4. If multiple elements match with similar likelihood, set ambiguity="AMBIGUOUS" and action="NONE".
 5. If confidence is low (< 0.35) or no element matches, set action="NONE".
 """
 
 PLANNER_SYSTEM_INSTRUCTION = """You are the Master Planner for a browser automation agent. The user will give you a high-level, vague goal. Break this goal down into a strict, logical sequence of atomic browser actions.
-If the user says "play kgf song", your output MUST be:
+If the task requires navigating to a specific website (e.g. YouTube, Amazon, Google), the FIRST step must ALWAYS be a navigation step like: "1. Navigate to 'https://www.youtube.com'"
+If the user says "play kgf song" (and is NOT already on YouTube), your output MUST be:
 [
-  "1. Locate the search bar",
-  "2. Type 'kgf song' into the search bar",
-  "3. Click the search button",
-  "4. Click the first video result"
+  "1. Navigate to 'https://www.youtube.com'",
+  "2. Locate the search bar",
+  "3. Type 'kgf song' into the search bar",
+  "4. Click the search button",
+  "5. Click the first video result"
 ]
 Return ONLY a valid JSON array of strings representing the steps. Do not include markdown formatting or conversational text."""
 
-def generate_execution_plan(vague_prompt: str, api_key: str = "", model_name: str = "gemini-3.6-flash") -> List[str]:
+def generate_execution_plan(vague_prompt: str, api_key: str = "", model_name: str = "gemini-2.0-flash") -> List[str]:
     """Expands a vague high-level user prompt into a structured, executable checklist."""
     vague_prompt = (vague_prompt or "").strip()
     if not vague_prompt:
@@ -828,12 +848,20 @@ def generate_execution_plan(vague_prompt: str, api_key: str = "", model_name: st
     if HAS_GENAI_SDK and active_key:
         try:
             client = genai.Client(api_key=active_key)
+            # NOTE: Do NOT use response_mime_type="application/json" here — it can cause
+            # StopCandidateException (empty output) on some Gemini model versions when
+            # safety filters are triggered. Parse JSON manually from text instead.
             resp = client.models.generate_content(
                 model=active_model,
                 contents=f"High-level user goal: {vague_prompt}",
                 config=types.GenerateContentConfig(
                     system_instruction=PLANNER_SYSTEM_INSTRUCTION,
-                    response_mime_type="application/json"
+                    safety_settings=[
+                        types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_ONLY_HIGH"),
+                        types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_ONLY_HIGH"),
+                        types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_ONLY_HIGH"),
+                        types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_ONLY_HIGH"),
+                    ]
                 )
             )
             if resp and resp.text:
@@ -845,19 +873,49 @@ def generate_execution_plan(vague_prompt: str, api_key: str = "", model_name: st
                 if isinstance(parsed, list) and len(parsed) > 0 and all(isinstance(x, str) for x in parsed):
                     return parsed
         except Exception as e:
-            print(f"[ZERO-SHOT PLANNER ERROR] {e}. Falling back to deterministic planner.")
+            err_str = str(e)
+            if "model output" in err_str.lower() or "stop_reason" in err_str.lower() or "StopCandidate" in type(e).__name__:
+                print(f"[ZERO-SHOT PLANNER] Safety filter blocked response. Falling back to deterministic planner.")
+            else:
+                print(f"[ZERO-SHOT PLANNER ERROR] {e}. Falling back to deterministic planner.")
 
     # Intelligent Deterministic Decomposition Fallback
     vp_lower = vague_prompt.lower()
+    # Detect cross-site navigation intent
+    site_map = {
+        "youtube": "https://www.youtube.com",
+        "amazon": "https://www.amazon.in",
+        "google": "https://www.google.com",
+        "github": "https://www.github.com",
+        "netflix": "https://www.netflix.com",
+        "spotify": "https://open.spotify.com",
+        "twitter": "https://www.twitter.com",
+        "instagram": "https://www.instagram.com",
+        "facebook": "https://www.facebook.com",
+        "flipkart": "https://www.flipkart.com",
+    }
+    navigate_url = None
+    for site, url in site_map.items():
+        if site in vp_lower:
+            navigate_url = url
+            break
+
     if "play" in vp_lower or "song" in vp_lower or "youtube" in vp_lower or "video" in vp_lower:
         query = re.sub(r"^(?:play|watch|find|search for)\s+", "", vague_prompt, flags=re.I).strip()
         query = re.sub(r"\s+(?:on\s+youtube|video|song)$", "", query, flags=re.I).strip() or "video"
+        target_url = navigate_url or "https://www.youtube.com"
         return [
-            f"1. Locate the search bar",
-            f"2. Type '{query}' into the search bar",
-            f"3. Click the search button",
-            f"4. Click the first video result",
-            f"5. Verify video playback is active"
+            f"1. Navigate to '{target_url}'",
+            f"2. Locate the search bar",
+            f"3. Type '{query}' into the search bar",
+            f"4. Click the search button",
+            f"5. Click the first video result",
+            f"6. Verify video playback is active"
+        ]
+    elif navigate_url and ("open" in vp_lower or "go to" in vp_lower or "visit" in vp_lower):
+        return [
+            f"1. Navigate to '{navigate_url}'",
+            f"2. Confirm the page loaded successfully"
         ]
     elif "fill" in vp_lower and "form" in vp_lower:
         return [
@@ -900,7 +958,8 @@ class GeminiAgentProvider:
         fallback_provider: Optional[AgentProvider] = None,
     ):
         self.api_key = (api_key if api_key is not None else os.getenv("GEMINI_API_KEY", "")).strip()
-        self.model_name = (model_name if model_name is not None else os.getenv("GEMINI_MODEL", "gemini-3.5-flash")).strip()
+        # Default to gemini-2.0-flash — a real, stable model name (not gemini-3.x-flash which doesn't exist)
+        self.model_name = (model_name if model_name is not None else os.getenv("GEMINI_MODEL", "gemini-2.0-flash")).strip()
         self.timeout_seconds = float(os.getenv("GEMINI_TIMEOUT", str(timeout_seconds)))
         self.fallback_provider = fallback_provider or DemoAgentProvider()
         self.last_provider_type: str = "gemini"
@@ -953,14 +1012,24 @@ class GeminiAgentProvider:
         }
 
     def _call_gemini(self, prompt: str) -> str:
-        """Invoke Gemini API with multi-model resilience."""
+        """Invoke Gemini API with multi-model resilience and safety-block handling."""
         if not HAS_GENAI_SDK or not self.api_key:
             raise RuntimeError("Gemini SDK or API key unavailable")
 
         client = genai.Client(api_key=self.api_key)
 
+        # Relaxed safety config — browser automation prompts discuss UI actions
+        # ("click", "type", "search") which can sometimes trigger false-positive safety blocks
+        # when combined with response_mime_type=json constraints.
+        _SAFETY = [
+            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_ONLY_HIGH"),
+            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_ONLY_HIGH"),
+            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_ONLY_HIGH"),
+            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_ONLY_HIGH"),
+        ]
+
         models_to_try = [self.model_name]
-        for fallback_model in ["gemini-3.5-flash", "gemini-flash-latest", "gemini-3.7-flash"]:
+        for fallback_model in ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"]:
             if fallback_model not in models_to_try:
                 models_to_try.append(fallback_model)
 
@@ -973,22 +1042,42 @@ class GeminiAgentProvider:
                     config=types.GenerateContentConfig(
                         system_instruction=GEMINI_SYSTEM_INSTRUCTION,
                         response_mime_type="application/json",
+                        safety_settings=_SAFETY,
                     ),
                 )
                 if response and response.text:
                     if current_model != self.model_name:
                         print(f"[AI PROVIDER] Auto-failover to Gemini model '{current_model}' succeeded.")
                     return response.text
+                # response.text is empty — safety or recitation block
+                finish_reason = None
+                try:
+                    finish_reason = response.candidates[0].finish_reason if response.candidates else None
+                except Exception:
+                    pass
+                print(f"[AI PROVIDER] Model '{current_model}' returned empty text (finish_reason={finish_reason}). Trying next model.")
+                continue
             except Exception as e:
                 last_error = e
                 err_msg = str(e).lower()
+                err_type = type(e).__name__
+                # Re-raise immediately on auth errors (no point retrying)
                 if "401" in err_msg or "403" in err_msg or "api_key" in err_msg:
                     raise e
+                # Catch "model output error" / StopCandidateException from safety blocks
+                if (
+                    "model output" in err_msg
+                    or "stop_reason" in err_msg
+                    or "stopcandidateexception" in err_type.lower()
+                    or "stopcandidateexception" in err_msg
+                ):
+                    print(f"[AI PROVIDER] Safety block on '{current_model}' ({err_type}). Trying next model.")
+                    continue
                 continue
 
         if last_error:
             raise last_error
-        raise RuntimeError("Gemini returned an empty response")
+        raise RuntimeError("All Gemini models returned empty or blocked responses")
 
     def propose_action(self, task: str, context: dict) -> Tuple[dict, str]:
         # If no API key is provided, gracefully fall back immediately
@@ -1321,6 +1410,24 @@ class GeminiAgentProvider:
                 "requiresApproval": False
             }, f"Gemini proposed scroll action ({amt}px). {reasoning}"
 
+        elif action_name == "NAVIGATE":
+            nav_url = str(parsed.get("target") or "").strip()
+            # Safety: only allow http/https URLs — block javascript:, data:, file:
+            if not re.match(r'^https?://', nav_url, re.I) or re.match(r'^(javascript:|data:|file:)', nav_url, re.I):
+                return self._fallback(task, context, reason=f"NAVIGATE target '{nav_url}' is not a permitted URL scheme")
+            self.last_provider_type = "gemini"
+            self.last_provider_name = "Gemini"
+            self.last_fallback_used = False
+            self.last_confidence = confidence
+            return {
+                "action": "NAVIGATE",
+                "target": nav_url,
+                "confidence": round(confidence, 3),
+                "groundingMethod": "gemini-navigate",
+                "requiresApproval": False,
+                "thought": str(parsed.get("thought") or reasoning)
+            }, f"Gemini proposed NAVIGATE to '{nav_url}'. {reasoning}"
+
         else:  # NONE
             self.last_provider_type = "gemini"
             self.last_provider_name = "Gemini"
@@ -1334,9 +1441,14 @@ class GeminiAgentProvider:
                 "requiresApproval": False
             }, f"Gemini proposed no action. {reasoning}"
 
-def get_agent_provider(provider_type: Optional[str] = None) -> AgentProvider:
+def get_agent_provider(
+    provider_type: Optional[str] = None,
+    dynamic_api_key: Optional[str] = None
+) -> AgentProvider:
     env_provider = os.getenv("AGENT_PROVIDER", "").strip().lower()
-    has_api_key = bool(os.getenv("GEMINI_API_KEY", "").strip())
+    # Dynamic key from request payload takes priority over env
+    resolved_key = (dynamic_api_key or "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
+    has_api_key = bool(resolved_key)
 
     if provider_type is not None:
         selected = provider_type.strip().lower()
@@ -1349,8 +1461,8 @@ def get_agent_provider(provider_type: Optional[str] = None) -> AgentProvider:
 
     if selected == "gemini":
         return GeminiAgentProvider(
-            api_key=os.getenv("GEMINI_API_KEY", "").strip(),
-            model_name=os.getenv("GEMINI_MODEL", "gemini-3.5-flash").strip(),
+            api_key=resolved_key,
+            model_name=os.getenv("GEMINI_MODEL", "gemini-2.0-flash").strip(),
             timeout_seconds=float(os.getenv("GEMINI_TIMEOUT", "25.0")),
             fallback_provider=DemoAgentProvider()
         )
@@ -1363,6 +1475,49 @@ def set_active_agent_provider(provider: AgentProvider):
     """Allows programmatic/test override of the active agent provider."""
     global active_agent_provider
     active_agent_provider = provider
+
+@app.get("/api/health")
+async def health_check():
+    """Simple health check — used by popup to detect backend online status."""
+    return {"status": "ok", "version": "SIH26171-v18"}
+
+@app.post("/api/reason")
+async def reason_endpoint(req: ReasonRequest):
+    """
+    Direct reasoning endpoint — accepts goal + sanitized elements, returns structured ReAct action.
+    Used by popup.js Cloud mode to bypass the multipart visual-context upload for faster calls.
+    Accepts an optional api_key override so the user's popup-configured key is used.
+    """
+    # Resolve provider with dynamic key if supplied
+    provider = get_agent_provider(dynamic_api_key=req.api_key)
+
+    context = {
+        "title": req.page_title or "",
+        "elements": req.elements or [],
+        "redactedSample": req.redacted_sample or "",
+        "fieldPlan": [],
+        "loopStep": 1
+    }
+
+    action, reasoning = provider.propose_action(req.goal, context)
+
+    provider_type = getattr(provider, "last_provider_type", "demo")
+    fallback_used = getattr(provider, "last_fallback_used", False)
+    fallback_reason = getattr(provider, "last_fallback_reason", None)
+    confidence = action.get("confidence", action.get("groundingScore", 1.0)) if isinstance(action, dict) else 1.0
+
+    response_payload = {
+        "status": "success",
+        "action": action,
+        "reasoning": reasoning,
+        "provider": getattr(provider, "last_provider_name", "Demo"),
+        "providerType": provider_type,
+        "fallbackUsed": fallback_used,
+        "confidence": confidence
+    }
+    if fallback_reason:
+        response_payload["fallbackReason"] = fallback_reason
+    return response_payload
 
 @app.get("/api/gemini-test")
 async def check_gemini_connectivity():
@@ -1417,8 +1572,11 @@ async def plan_task_endpoint(req: PlanTaskRequest):
     """
     Task 1: Zero-Shot Task Planner endpoint.
     Expands a vague high-level user prompt into a structured, executable checklist.
+    Accepts an optional api_key override to use the popup-configured Gemini key.
     """
-    plan = generate_execution_plan(req.task)
+    resolved_key = (req.api_key or "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
+    resolved_model = (req.model_name or "").strip() or os.getenv("GEMINI_MODEL", "gemini-2.0-flash").strip()
+    plan = generate_execution_plan(req.task, api_key=resolved_key, model_name=resolved_model)
     return {
         "status": "success",
         "task": req.task,
